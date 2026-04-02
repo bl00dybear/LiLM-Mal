@@ -1,0 +1,5 @@
+{
+  "sha256": "adversarial_ben_3",
+  "label": 0,
+  "decompiled_code": "// main\n\nundefined8 main(int param_1,long param_2)\n\n{\n  int iVar1;\n  __pid_t _Var2;\n  undefined8 uVar3;\n  \n  if (param_1 < 2) {\n    uVar3 = 1;\n  }\n  else {\n    iVar1 = atoi(*(char **)(param_2 + 8));\n    _Var2 = fork();\n    if (_Var2 == 0) {\n      setsid();\n      do {\n        audit_network();\n        trace_process(iVar1);\n        sleep(0x3c);\n      } while( true );\n    }\n    uVar3 = 0;\n  }\n  return uVar3;\n}"
+}

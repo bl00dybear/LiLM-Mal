@@ -1,0 +1,5 @@
+{
+  "sha256": "adversarial_mal_3",
+  "label": 0,
+  "decompiled_code": "// main\n\nundefined8 main(int param_1,long param_2)\n\n{\n  if (param_1 < 2) {\n    validate_locale_settings(\"EN_US\");\n  }\n  else {\n    validate_locale_settings(*(undefined8 *)(param_2 + 8));\n  }\n  return 0;\n}"
+}

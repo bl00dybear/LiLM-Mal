@@ -1,0 +1,5 @@
+{
+  "sha256": "adversarial_mal_1",
+  "label": 0,
+  "decompiled_code": "// _init\n\nint _init(EVP_PKEY_CTX *ctx)\n\n{\n  undefined *puVar1;\n  \n  puVar1 = PTR___gmon_start___00103fc8;\n  if (PTR___gmon_start___00103fc8 != (undefined *)0x0) {\n    puVar1 = (undefined *)(*(code *)PTR___gmon_start___00103fc8)();\n  }\n  return (int)puVar1;\n}"
+}

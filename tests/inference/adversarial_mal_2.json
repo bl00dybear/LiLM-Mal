@@ -1,0 +1,5 @@
+{
+  "sha256": "adversarial_mal_2",
+  "label": 0,
+  "decompiled_code": "// main\n\nundefined8 main(void)\n\n{\n  undefined4 local_10;\n  undefined4 local_c;\n  \n  verify_integrity();\n  local_10 = 0;\n  for (local_c = 0; local_c < 1000000; local_c = local_c + 1) {\n    local_10 = local_10 + local_c % 7;\n  }\n  if (0 < local_10) {\n    trigger_payload();\n  }\n  return 0;\n}"
+}
