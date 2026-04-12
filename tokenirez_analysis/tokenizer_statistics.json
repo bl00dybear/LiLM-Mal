@@ -1,0 +1,11 @@
+{
+    "cores_used": 80,
+    "total_files": 92659,
+    "mean": 2500.4,
+    "median": 908,
+    "p90": 7089,
+    "max": 291077,
+    "token_budget": 8156,
+    "truncated_files": 7461,
+    "loss_percentage": 8.05
+}

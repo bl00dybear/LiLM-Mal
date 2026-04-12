@@ -43,7 +43,7 @@ class LiLMMalDataset(Dataset):
         self.tok.padding_side = "left"
         self.max_len = config.max_token_len
         self.num_chunks = config.num_chunks
-        self.base = Path("/media/sebi/nvme-1tb/LiLM-Mal-Dataset/decompiled")
+        self.base = Path("/media/sebi/nvme-1tb/LiLM-Mal-Dataset/decompiled-40")
         self.samples = self._index()
         if indices is not None:
             self.samples = [self.samples[i] for i in indices]

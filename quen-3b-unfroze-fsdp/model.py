@@ -38,6 +38,11 @@ class MalwareDetectionModel(nn.Module):
         )
 
         self.regression_head = nn.Linear(hidden_dim, 1, dtype=torch.bfloat16)
+        nn.init.xavier_uniform_(self.regression_head.weight)
+        nn.init.zeros_(self.regression_head.bias)
+
+        nn.init.xavier_uniform_(self.attention_net[0].weight)
+        nn.init.xavier_uniform_(self.attention_net[2].weight)
         self.loss_fct = nn.BCEWithLogitsLoss()
 
     def forward(self, input_ids, attention_mask, labels=None):

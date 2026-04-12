@@ -3,14 +3,21 @@ import os
 from pathlib import Path
 import torch
 from transformers import AutoTokenizer
+from transformers import logging as hf_logging
 from tqdm import tqdm
 from multiprocessing import Pool, cpu_count
+
+import faulthandler
+import signal
+
+faulthandler.register(signal.SIGUSR1)
 
 _tokenizer = None
 _budget = None
 
 def init_worker(model_path, budget):
     global _tokenizer, _budget
+    hf_logging.set_verbosity_error()
     _tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True, use_fast=True)
     _budget = budget
 
@@ -28,14 +35,14 @@ def process_file_optimized(file_path):
         return None
 
 def main():
-    base_path = Path("/media/sebi/nvme-1tb/LiLM-Mal-Dataset/decompiled/train")
-    model_path = "/media/sebi/nvme-1tb/LiLM-Mal/models/qwen2.5-coder-7b-instruct"
+    base_path = Path("/media/sebi/nvme-1tb/LiLM-Mal-Dataset/decompiled-dataset/train")
+    model_path = "/media/sebi/nvme-1tb/LiLM-Mal/models/qwen2.5-coder-1.5b-instruct"
     num_workers = cpu_count()
     
     temp_tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     prompt_overhead = "<|im_start|>system\nYou are a reverse-engineering assistant.<|im_end|>\n<|im_start|>user\nAnalyze this code:\n<|im_end|>\n<|im_start|>assistant\n"
     overhead_tokens = temp_tokenizer(prompt_overhead, return_tensors="pt")["input_ids"].shape[1]
-    kode_budget = 4096 - overhead_tokens - 10
+    kode_budget = 4096*2 - overhead_tokens - 10
     del temp_tokenizer
 
     files = list((base_path / "benign").glob("*.json")) + list((base_path / "malware").glob("*.json"))
@@ -48,7 +55,7 @@ def main():
         results = list(tqdm(
             pool.imap_unordered(process_file_optimized, files, chunksize=200), 
             total=total_files,
-            desc="Analiza dataset"
+            desc="Dataset analysis"
         ))
 
     for res in results:
@@ -67,24 +74,41 @@ def main():
     max_len = max(lengths)
 
     print("\n" + "="*50)
-    print("STATISTICI RESURSE MAXIME")
+    print("MAXIMUM RESOURCE STATISTICS")
     print("="*50)
-    print(f"Nuclee utilizate: {num_workers}")
-    print(f"Total fisiere: {n}")
+    print(f"Cores used: {num_workers}")
+    print(f"Total files: {n}")
     print("-" * 50)
-    print(f"Media: {avg_len:.1f}")
-    print(f"Mediana: {median_len}")
+    print(f"Mean: {avg_len:.1f}")
+    print(f"Median: {median_len}")
     print(f"P90: {p90_len}")
     print(f"Max: {max_len}")
     print("-" * 50)
-    print(f"Fisiere truncate la {kode_budget}: {truncated_count}")
-    print(f"Procent pierdere: {(truncated_count/n)*100:.2f}%")
+    print(f"Files truncated at {kode_budget}: {truncated_count}")
+    print(f"Loss percentage: {(truncated_count/n)*100:.2f}%")
     print("="*50)
+
+    stats_dict = {
+        "cores_used": num_workers,
+        "total_files": n,
+        "mean": round(avg_len, 1),
+        "median": median_len,
+        "p90": p90_len,
+        "max": max_len,
+        "token_budget": kode_budget,
+        "truncated_files": truncated_count,
+        "loss_percentage": round((truncated_count/n)*100, 2)
+    }
+
+    with open("tokenizer_statistics.json", "w", encoding="utf-8") as f:
+        json.dump(stats_dict, f, indent=4)
 
 if __name__ == "__main__":
     main()
 
 
+    
+#Before:
 # ==================================================
 # STATISTICI RESURSE MAXIME
 # ==================================================
@@ -98,4 +122,21 @@ if __name__ == "__main__":
 # --------------------------------------------------
 # Fisiere truncate la 4060: 17327
 # Procent pierdere: 18.70%
+# ==================================================
+
+#After:
+
+# ==================================================
+# MAXIMUM RESOURCE STATISTICS
+# ==================================================
+# Cores used: 80
+# Total files: 92659
+# --------------------------------------------------
+# Mean: 2500.4
+# Median: 908
+# P90: 7089
+# Max: 291077
+# --------------------------------------------------
+# Files truncated at 8156: 7461
+# Loss percentage: 8.05%
 # ==================================================

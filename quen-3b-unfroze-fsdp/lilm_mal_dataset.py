@@ -22,8 +22,19 @@ def malware_collate_fn(batch: list[dict]) -> dict:
     }
 
 class LiLMMalDataset(Dataset):
-    SYSTEM_PROMPT = "You are a binary analysis expert specializing in ELF malware detection."
-    USER_HEADER   = "Analyze the following decompiled ELF binary code and classify it.\nAnswer with exactly one word: malware or benign.\n\n<code>\n"
+    SYSTEM_PROMPT = (
+        "You are a senior reverse engineer specializing in Linux ELF malware analysis. "
+        "You analyze decompiled binary code and identify malicious behavior patterns "
+        "such as privilege escalation, persistence mechanisms, network exfiltration, "
+        "process injection, and obfuscation techniques (pay attention on what are this operations applied)."
+    )
+
+    USER_HEADER = (
+        "Analyze the following decompiled ELF binary. "
+        "Focus on: suspicious syscalls, anti-analysis tricks, "
+        "hardcoded C2 indicators, and abnormal control flow.\n\n"
+        "<code>\n"
+    )
     USER_FOOTER   = "\n</code>"
 
     def __init__(self, split: str, tokenizer: PreTrainedTokenizer, config, indices: list[int] | None = None):
@@ -32,7 +43,7 @@ class LiLMMalDataset(Dataset):
         self.tok.padding_side = "left"
         self.max_len = config.max_token_len
         self.num_chunks = config.num_chunks
-        self.base = Path("/media/sebi/nvme-1tb/LiLM-Mal-Dataset/decompiled")
+        self.base = Path("/media/sebi/nvme-1tb/LiLM-Mal-Dataset/decompiled-40")
         self.samples = self._index()
         if indices is not None:
             self.samples = [self.samples[i] for i in indices]

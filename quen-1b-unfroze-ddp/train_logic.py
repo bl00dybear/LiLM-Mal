@@ -15,10 +15,6 @@ import wandb
 
 
 def save_ddp_model(model, rank, config, epoch, is_best=False, step=None):
-    """
-    Cu DDP fiecare GPU are o copie completa a modelului,
-    deci salvam doar de pe rank 0, fara niciun gather special.
-    """
     if rank != 0:
         return
 

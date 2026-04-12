@@ -77,7 +77,7 @@ def main_worker(rank, config, tokenizer):
     if rank == 0:
         wandb.init(
             project="LiLM-Malware-Detection",
-            name=f"qwen-3b-fsdp-ctx{config.max_token_len}",
+            name=f"qwen-3b-fsdp-ctx{config.max_token_len}-sampled",
             config=asdict(config)
         )
 

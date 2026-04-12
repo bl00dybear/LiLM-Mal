@@ -135,8 +135,8 @@ def evaluate(model, loader, rank):
         global_labels = torch.cat(gathered_labels)
         
         valid_mask = global_labels != -1
-        global_preds = global_preds[valid_mask].numpy()
-        global_labels = global_labels[valid_mask].numpy()
+        global_preds = global_preds[valid_mask].cpu().numpy()
+        global_labels = global_labels[valid_mask].cpu().numpy()
 
         metrics["accuracy"] = accuracy_score(global_labels, global_preds)
         metrics["precision"] = precision_score(global_labels, global_preds, zero_division=0)
@@ -229,7 +229,7 @@ def train(
                 if global_step % config.save_every_n_steps == 0 and global_step > 0:
                     save_fsdp_model(model, rank, config, epoch, is_best=False, step=global_step)
 
-                if global_step % config.valuate_every_n_steps == 0 and global_step > 0:
+                if global_step % config.evaluate_every_n_steps == 0 and global_step > 0:
                     metrics = evaluate(model, valid_loader, rank)
                     
                     if rank == 0:
