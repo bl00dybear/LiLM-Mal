@@ -1,4 +1,5 @@
 import os
+import warnings
 
 import torch
 import torch.distributed as dist
@@ -23,6 +24,20 @@ import wandb
 
 import logging
 import torch._logging
+
+
+def configure_runtime_warnings():
+    # Suppress known non-fatal runtime warnings that do not affect training logic.
+    warnings.filterwarnings(
+        "ignore",
+        message=r"FSDP\.state_dict_type\(\) and FSDP\.set_state_dict_type\(\) are being deprecated.*",
+        category=FutureWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message=r"resource_tracker: There appear to be \d+ leaked semaphore objects to clean up at shutdown",
+        category=UserWarning,
+    )
 
 
 
@@ -73,6 +88,8 @@ def load_model_fsdp(config, rank):
 
 
 def main_worker(rank, config, tokenizer):
+    configure_runtime_warnings()
+    torch._logging.set_logs(all=logging.ERROR)
 
     if rank == 0:
         wandb.init(
@@ -156,6 +173,7 @@ def main_worker(rank, config, tokenizer):
 
 
 def main():
+    configure_runtime_warnings()
     torch.set_float32_matmul_precision('high')
     torch._logging.set_logs(all=logging.ERROR)
 

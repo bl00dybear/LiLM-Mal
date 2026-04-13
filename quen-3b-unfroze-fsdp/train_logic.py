@@ -231,6 +231,7 @@ def train(
 
                 if global_step % config.evaluate_every_n_steps == 0 and global_step > 0:
                     metrics = evaluate(model, valid_loader, rank)
+                    is_best_step = False
                     
                     if rank == 0:
                         val_loss = metrics["val_loss"]
@@ -248,11 +249,18 @@ def train(
                         
                         if f1 > best_f1_score:
                             best_f1_score = f1
-                            save_fsdp_model(model, rank, config, epoch, is_best=True)
+                            is_best_step = True
+
+                    best_flag = torch.tensor([1 if is_best_step else 0], device=rank, dtype=torch.int)
+                    if is_distributed:
+                        dist.broadcast(best_flag, src=0)
+                    if best_flag.item() == 1:
+                        save_fsdp_model(model, rank, config, epoch, is_best=True)
                             
                     model.train()
 
         metrics = evaluate(model, valid_loader, rank)
+        is_best_epoch = False
         
         if rank == 0:
             val_loss = metrics["val_loss"]
@@ -270,6 +278,12 @@ def train(
             
             if f1 > best_f1_score:
                 best_f1_score = f1
-                save_fsdp_model(model, rank, config, epoch, is_best=True)
-            
-            save_fsdp_model(model, rank, config, epoch, is_best=False)
+                is_best_epoch = True
+
+        best_epoch_flag = torch.tensor([1 if is_best_epoch else 0], device=rank, dtype=torch.int)
+        if is_distributed:
+            dist.broadcast(best_epoch_flag, src=0)
+        if best_epoch_flag.item() == 1:
+            save_fsdp_model(model, rank, config, epoch, is_best=True)
+
+        save_fsdp_model(model, rank, config, epoch, is_best=False)
