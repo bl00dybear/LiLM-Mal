@@ -1,53 +1,19 @@
-import os
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
-from torch.nn.parallel import DistributedDataParallel as DDP
 
 from transformers import AutoTokenizer
 
 from config import Qwen15BConfig
-from model import MalwareDetectionModel
 from lilm_mal_dataset import build_loaders
 from train_logic import train
+from utils import setup, cleanup, load_model_ddp, load_training_checkpoint
 
 from dataclasses import asdict
 import wandb
 
 import logging
 import torch._logging
-
-
-def setup(rank, world_size):
-    os.environ["MASTER_ADDR"] = "localhost"
-    os.environ["MASTER_PORT"] = "12355"
-    os.environ["RANK"] = str(rank)
-    os.environ["LOCAL_RANK"] = str(rank)
-    os.environ["WORLD_SIZE"] = str(world_size)
-
-    dist.init_process_group("nccl", rank=rank, world_size=world_size)
-    torch.cuda.set_device(rank)
-
-
-def cleanup():
-    if dist.is_available() and dist.is_initialized():
-        dist.destroy_process_group()
-
-
-def load_model_ddp(config, rank):
-    torch.cuda.set_device(rank)
-
-    model = MalwareDetectionModel(config).to(rank)
-    model = torch.compile(model)
-
-    model = DDP(
-        model,
-        device_ids=[rank],
-        output_device=rank,
-        find_unused_parameters=False,
-    )
-
-    return model
 
 
 def main_worker(rank, config):
@@ -118,6 +84,15 @@ def main_worker(rank, config):
 
         print(f"[info] [rank {rank}] [scheduler] initialized")
 
+        resumed_global_step, resumed_best_f1 = load_training_checkpoint(
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            config=config,
+            rank=rank,
+        )
+        dist.barrier()
+
         train(
             model=model,
             train_loader=train_loader,
@@ -129,6 +104,8 @@ def main_worker(rank, config):
             grad_accum_steps=config.grad_accum_steps,
             rank=rank,
             config=config,
+            start_global_step=resumed_global_step,
+            start_best_f1=resumed_best_f1,
         )
     finally:
         cleanup()

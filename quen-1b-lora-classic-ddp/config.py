@@ -34,7 +34,7 @@ class Qwen15BConfig:
     weight_decay: float = 0.01
     adam_momentum: float = 0.9
     adam_scaling: float = 0.95
-    epochs: int = 3
+    epochs: int = 1
 
     gradient_checkpointing: bool = True
     use_distributed_sampler: bool = True
@@ -42,3 +42,5 @@ class Qwen15BConfig:
     output_dir: str = "outputs/checkpoints-q1.5b-lora"
     best_checkpoint_name: str = "qwen_malware_best.pt"
     plot_dir: str = "outputs/plots/qwen1.5-lora"
+
+    resume_checkpoint_path: str | None = "/media/sebi/nvme-1tb/LiLM-Mal/outputs/checkpoints-q1.5b-lora/qwen_malware_ep0_step490.pt"

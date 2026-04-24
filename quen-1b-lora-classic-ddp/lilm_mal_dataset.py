@@ -1,5 +1,6 @@
 import json
 import os
+import math
 import random
 import torch
 import torch.distributed as dist
@@ -9,6 +10,42 @@ from torch.utils.data.distributed import DistributedSampler
 from transformers import PreTrainedTokenizer
 
 LABEL_MAP = {0: "benign", 1: "malware"}
+
+
+class OffsetDistributedSampler(DistributedSampler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.start_index = 0
+
+    def set_start_index(self, start_index: int):
+        self.start_index = max(0, int(start_index))
+
+    def __iter__(self):
+        if self.shuffle:
+            g = torch.Generator()
+            g.manual_seed(self.seed + self.epoch)
+            indices = torch.randperm(len(self.dataset), generator=g).tolist()
+        else:
+            indices = list(range(len(self.dataset)))
+
+        if not self.drop_last:
+            padding_size = self.total_size - len(indices)
+            if padding_size <= len(indices):
+                indices += indices[:padding_size]
+            else:
+                repeat_times = math.ceil(padding_size / len(indices))
+                indices += (indices * repeat_times)[:padding_size]
+        else:
+            indices = indices[:self.total_size]
+
+        indices = indices[self.rank:self.total_size:self.num_replicas]
+
+        start = min(self.start_index, len(indices))
+        indices = indices[start:]
+        return iter(indices)
+
+    def __len__(self):
+        return max(0, self.num_samples - min(self.start_index, self.num_samples))
 
 def malware_collate_fn(batch: list[dict]) -> dict:
     input_ids = [x["input_ids"] for x in batch]
@@ -166,7 +203,7 @@ def build_loaders(config, tokenizer) -> tuple[DataLoader, DataLoader, DataLoader
     train_sampler = None
     test_sampler = None
     if _is_dist and config.use_distributed_sampler:
-        train_sampler = DistributedSampler(
+        train_sampler = OffsetDistributedSampler(
             train_ds,
             num_replicas=dist.get_world_size(),
             rank=dist.get_rank(),
