@@ -15,6 +15,7 @@ class Qwen15BConfig:
     num_chunks: int = 2
 
     batch_size: int = 2
+    test_batch_size: int = 8
     num_workers: int = 16
     save_every_n_steps: int = 10
     evaluate_every_n_steps: int = 50
@@ -25,7 +26,7 @@ class Qwen15BConfig:
     lora_rank: int = 16
     lora_alpha: int = 16
     lora_target_modules: list[str] = field(
-        default_factory=lambda: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+        default_factory=lambda: ["q_proj", "v_proj"]
     )
     adapt_bias: bool = False
 
@@ -39,8 +40,9 @@ class Qwen15BConfig:
     gradient_checkpointing: bool = True
     use_distributed_sampler: bool = True
 
-    output_dir: str = "outputs/checkpoints-q1.5b-lora-full"
+    output_dir: str = "outputs/checkpoints-q1.5b-lora-classic"
     best_checkpoint_name: str = "qwen_malware_best.pt"
-    plot_dir: str = "outputs/plots/qwen1.5-lora-full"
+    test_checkpoint_name: str = "qwen_malware_ep0.pt"
+    plot_dir: str = "outputs/plots/qwen1.5-lora-classic"
 
-    resume_checkpoint_path: str | None = "/media/sebi/nvme-1tb/LiLM-Mal/outputs/checkpoints-q1.5b-lora-full/qwen_malware_ep0_step450.pt"
+    resume_checkpoint_path: str | None = None

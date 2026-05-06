@@ -14,6 +14,7 @@ class Qwen15BConfig:
     num_chunks:                 int = 2
 
     batch_size:                 int = 2
+    test_batch_size:            int = 8
     num_workers:                int = 16
     save_every_n_steps:         int = 10
     evaluate_every_n_steps:     int = 50
@@ -34,4 +35,7 @@ class Qwen15BConfig:
 
     output_dir:                 str = "outputs/checkpoints-q1.5b"
     best_checkpoint_name:       str = "qwen_malware_best.pt"
+    test_checkpoint_name:       str = "qwen_malware_ep0.pt"
     plot_dir:                   str = "outputs/plots/qwen1.5"
+
+    resume_checkpoint_path:     str | None = None

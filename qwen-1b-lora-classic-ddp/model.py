@@ -20,7 +20,7 @@ class LoRALinear(nn.Module):
         self.rank = int(rank)
         self.alpha = float(alpha)
         self.adapt_bias = bool(adapt_bias)
-        self.scaling = self.alpha / self.rank
+        self.scaling = self.alpha / self.rank 
 
         for p in self.base.parameters():
             p.requires_grad = False
@@ -60,8 +60,8 @@ def inject_lora_simple(
     adapt_bias: bool = False,
 ) -> None:
     for name, module in list(backbone.named_modules()):
-        if not name.endswith("self_attn"):
-            continue
+        # if not name.endswith("self_attn") or name.endwith("mlp"):
+        #     continue
 
         for linear_name in target_modules:
             if not hasattr(module, linear_name):

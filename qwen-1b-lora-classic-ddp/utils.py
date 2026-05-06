@@ -24,11 +24,12 @@ def cleanup():
 		dist.destroy_process_group()
 
 
-def load_model_ddp(config, rank):
+def load_model_ddp(config, rank, compile_model=True):
 	torch.cuda.set_device(rank)
 
 	model = MalwareDetectionModel(config).to(rank)
-	model = torch.compile(model)
+	if compile_model:
+		model = torch.compile(model)
 
 	model = DDP(
 		model,
