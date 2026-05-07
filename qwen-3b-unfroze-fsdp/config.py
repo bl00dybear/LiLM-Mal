@@ -14,6 +14,7 @@ class Quen3BConfig:
     num_chunks:                 int = 2   
 
     batch_size:                 int = 2
+    test_batch_size:            int = 1
     num_workers:                int = 16
     save_every_n_steps:         int = 20
     evaluate_every_n_steps:     int = 50
@@ -35,5 +36,8 @@ class Quen3BConfig:
     use_distributed_sampler:    bool = True
     
     output_dir:                 str = "outputs/checkpoints-q3b"
-    best_checkpoint_name:       str = "qwen_malware_best.pt" 
+    best_checkpoint_name:       str = "qwen_malware_best.pt"
+    test_checkpoint_name:       str = "qwen_malware_ep0.pt"
     plot_dir:                   str = "outputs/plots/qwen3"
+
+    resume_checkpoint_path:     str | None = None

@@ -4,20 +4,13 @@ import warnings
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-from torch.distributed.fsdp import CPUOffload, MixedPrecision, ShardingStrategy
-from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
-
-from functools import partial
 
 from transformers import AutoTokenizer
-from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
-
 
 from config import Quen3BConfig
-from model import MalwareDetectionModel
 from lilm_mal_dataset import build_loaders
 from train_logic import train
+from utils import setup, cleanup, load_model_fsdp, load_training_checkpoint
 
 from dataclasses import asdict
 import wandb
@@ -40,156 +33,114 @@ def configure_runtime_warnings():
     )
 
 
-
-def setup(rank, world_size):
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'
-    os.environ['RANK']        = str(rank)
-    os.environ['LOCAL_RANK']  = str(rank)
-    os.environ['WORLD_SIZE']  = str(world_size)
-    
-    dist.init_process_group("nccl", rank=rank, world_size=world_size)
-    torch.cuda.set_device(rank)
-
-def cleanup():
-    dist.destroy_process_group()
-
-
-def load_model_fsdp(config, rank):
-    torch.cuda.set_device(rank)
-    model = MalwareDetectionModel(config).to(rank)
-
-    mixed_precision = MixedPrecision(
-        param_dtype=torch.bfloat16,
-        reduce_dtype=torch.bfloat16,
-        buffer_dtype=torch.bfloat16,
-    )
-
-    wrap_policy = partial(
-        transformer_auto_wrap_policy,
-        transformer_layer_cls={Qwen2DecoderLayer},
-    )
-
-    model = FSDP(
-        model,
-        auto_wrap_policy=wrap_policy,
-        mixed_precision=mixed_precision,
-        sharding_strategy=ShardingStrategy.FULL_SHARD,
-        cpu_offload=CPUOffload(offload_params=getattr(config, "fsdp_cpu_offload", False)),
-        device_id=rank,
-        sync_module_states=True,
-        limit_all_gathers=True,
-        use_orig_params=True,
-    )
-
-    model = torch.compile(model)
-
-    return model
-
-
-def main_worker(rank, config, tokenizer):
+def main_worker(rank, config):
     configure_runtime_warnings()
+    torch.set_float32_matmul_precision("high")
     torch._logging.set_logs(all=logging.ERROR)
+
+    setup(rank=rank, world_size=config.world_size)
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        config.model_path,
+        trust_remote_code=True,
+        use_fast=True,
+    )
 
     if rank == 0:
         wandb.init(
             project="LiLM-Malware-Detection",
             name=f"qwen-3b-fsdp-ctx{config.max_token_len}-sampled",
-            config=asdict(config)
+            config=asdict(config),
         )
 
-    print(f"[info] [rank {rank}] main worker started")
+    try:
+        print(f"[info] [rank {rank}] main worker started")
 
-    setup(rank=rank, world_size=config.world_size)
+        model = load_model_fsdp(config=config, rank=rank)
+        print(f"[info] [rank {rank}] [model] loaded")
 
-    model = load_model_fsdp(config = config, rank= rank)
+        train_loader, val_loader, test_loader = build_loaders(config, tokenizer)
 
-    print(f"[info] [rank {rank}] [model] loaded")
+        adamw_params = [p for p in model.parameters() if p.requires_grad]
+        print(f"[info] [rank {rank}] [optimizer] AdamW: {len(adamw_params)} groups")
 
-    train_loader, val_loader, test_loader = build_loaders(config, tokenizer)
+        optimizer = torch.optim.AdamW(
+            params=adamw_params,
+            lr=config.learning_rate,
+            betas=(config.adam_momentum, config.adam_scaling),
+            eps=1e-8,
+            weight_decay=config.weight_decay,
+            fused=True,
+        )
 
+        print(f"[info] [rank {rank}] [optimizer] initialized")
 
-    adamw_params = [p for p in model.parameters() if p.requires_grad]
+        steps_per_epoch = max(1, len(train_loader) // config.grad_accum_steps)
+        total_steps = max(1, steps_per_epoch * config.epochs)
+        warmup_steps = max(1, int(total_steps * 0.1))
+        warmup_steps = min(warmup_steps, total_steps)
+        cosine_steps = max(1, total_steps - warmup_steps)
 
-    print(f"[info] [rank {rank}] [optimizer] AdamW: {len(adamw_params)} groups")
+        linear_scheduler = torch.optim.lr_scheduler.LinearLR(
+            optimizer=optimizer,
+            start_factor=0.1,
+            total_iters=warmup_steps,
+        )
 
-    adamw_optimizer = torch.optim.AdamW(
-        params=adamw_params,
-        lr = config.learning_rate,
-        betas=(config.adam_momentum,config.adam_scaling),
-        eps = 1e-8,
-        weight_decay=config.weight_decay,
-        fused=True
-    )
+        cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer=optimizer,
+            T_max=cosine_steps,
+            eta_min=config.learning_rate * 0.1,
+        )
 
-    print(f"[info] [rank {rank}] [optimizer] initialized")
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer=optimizer,
+            schedulers=[linear_scheduler, cosine_scheduler],
+            milestones=[warmup_steps],
+        )
 
-    steps_per_epoch = len(train_loader) // config.grad_accum_steps
-    total_steps = steps_per_epoch * config.epochs
-    warmup_steps = int(total_steps*0.1)
-    cosine_steps = total_steps - warmup_steps
+        print(f"[info] [rank {rank}] [scheduler] initialized")
 
+        resumed_global_step, resumed_best_f1 = load_training_checkpoint(
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            config=config,
+            rank=rank,
+        )
+        dist.barrier()
 
-    liniar_scheduler_adamw = torch.optim.lr_scheduler.LinearLR(
-        optimizer = adamw_optimizer,
-        start_factor = 0.1,
-        total_iters = warmup_steps
-    )
-
-    cosine_scheduler_adamw = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer=adamw_optimizer,
-        T_max=cosine_steps,
-        eta_min=config.learning_rate*0.1
-    )
-
-    adamw_scheduler = torch.optim.lr_scheduler.SequentialLR(
-        optimizer=adamw_optimizer,
-        schedulers=[liniar_scheduler_adamw,cosine_scheduler_adamw],
-        milestones=[warmup_steps]
-    )
-
-    print(f"[info] [rank {rank}] [scheduler] initialized")
-
-
-    train(
-        model=model,
-        train_loader=train_loader,
-        valid_loader=val_loader,
-        test_loader=test_loader,
-        optimizer=adamw_optimizer,
-        scheduler=adamw_scheduler,
-        epochs=config.epochs,
-        grad_accum_steps=config.grad_accum_steps,
-        rank=rank,
-        config=config
-    )
-
-
-
-
-    cleanup()
-    if rank == 0:
-        wandb.finish()
+        train(
+            model=model,
+            train_loader=train_loader,
+            valid_loader=val_loader,
+            test_loader=test_loader,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            epochs=config.epochs,
+            grad_accum_steps=config.grad_accum_steps,
+            rank=rank,
+            config=config,
+            start_global_step=resumed_global_step,
+            start_best_f1=resumed_best_f1,
+        )
+    finally:
+        cleanup()
+        if rank == 0:
+            wandb.finish()
 
 
 def main():
     configure_runtime_warnings()
-    torch.set_float32_matmul_precision('high')
     torch._logging.set_logs(all=logging.ERROR)
 
     config = Quen3BConfig()
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        config.model_path,
-        trust_remote_code=True,
-        use_fast=True
-    )
-
     mp.spawn(
         main_worker,
-        args=(config, tokenizer),
+        args=(config,),
         nprocs=config.world_size,
-        join=True
+        join=True,
     )
 
 

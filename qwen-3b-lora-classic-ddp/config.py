@@ -15,6 +15,7 @@ class Qwen15BConfig:
     num_chunks: int = 2
 
     batch_size: int = 1
+    test_batch_size: int = 1
     num_workers: int = 8
     save_every_n_steps: int = 10
     evaluate_every_n_steps: int = 50
@@ -42,6 +43,7 @@ class Qwen15BConfig:
 
     output_dir: str = "outputs/checkpoints-q3b-lora-classic"
     best_checkpoint_name: str = "qwen_malware_best.pt"
+    test_checkpoint_name: str = "qwen_malware_ep0.pt"
     plot_dir: str = "outputs/plots/qwen3-lora-classic"
 
     resume_checkpoint_path: str | None = None

@@ -52,11 +52,15 @@ def malware_collate_fn(batch: list[dict]) -> dict:
     masks = [x["attention_mask"] for x in batch]
     labels = [x["label"] for x in batch]
     
-    return {
+    res = {
         "input_ids": torch.stack(input_ids), 
         "attention_mask": torch.stack(masks),     
         "labels": torch.stack(labels),    
     }
+    if "idx" in batch[0]:
+        indices = [x["idx"] for x in batch]
+        res["idx"] = torch.stack(indices)
+    return res
 
 class LiLMMalDataset(Dataset):
     SYSTEM_PROMPT = (
@@ -158,21 +162,23 @@ class LiLMMalDataset(Dataset):
             "input_ids": encoded["input_ids"],      
             "attention_mask": encoded["attention_mask"], 
             "label": torch.tensor(sample["label"], dtype=torch.long),
+            "idx": torch.tensor(idx, dtype=torch.long),
         }
 
 class LiLMMalDataLoader(DataLoader):
-    def __init__(self, dataset: LiLMMalDataset, config, sampler: DistributedSampler | None = None, shuffle: bool = True):
+    def __init__(self, dataset: LiLMMalDataset, config, sampler: DistributedSampler | None = None, shuffle: bool = True, is_test: bool = False):
+        batch_size = getattr(config, "test_batch_size", config.batch_size) if is_test else config.batch_size
         super().__init__(
             dataset,
-            batch_size=config.batch_size,
+            batch_size=batch_size,
             shuffle=(shuffle and sampler is None),
             num_workers=config.num_workers,
             sampler=sampler,
             collate_fn=malware_collate_fn,
             pin_memory=True,
-            drop_last=True if sampler is not None else False,
+            drop_last=(not is_test) and (True if sampler is not None else False),
             persistent_workers=True if config.num_workers > 0 else False,
-            prefetch_factor=4 if config.num_workers > 0 else None,
+            prefetch_factor=config.prefetch_factor if config.num_workers > 0 else None,
         )
 
 def build_loaders(config, tokenizer) -> tuple[DataLoader, DataLoader, DataLoader]:
@@ -220,7 +226,7 @@ def build_loaders(config, tokenizer) -> tuple[DataLoader, DataLoader, DataLoader
 
     train_loader = LiLMMalDataLoader(train_ds, config, sampler=train_sampler)
     val_loader = LiLMMalDataLoader(val_ds, config, shuffle=False)
-    test_loader = LiLMMalDataLoader(test_ds, config, sampler=test_sampler, shuffle=False)
+    test_loader = LiLMMalDataLoader(test_ds, config, sampler=test_sampler, shuffle=False, is_test=True)
 
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     if local_rank == 0:

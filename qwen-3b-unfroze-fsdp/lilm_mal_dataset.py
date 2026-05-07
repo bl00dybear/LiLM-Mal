@@ -1,5 +1,6 @@
 import json
 import os
+import math
 import random
 import torch
 import torch.distributed as dist
@@ -10,16 +11,56 @@ from transformers import PreTrainedTokenizer
 
 LABEL_MAP = {0: "benign", 1: "malware"}
 
+
+class OffsetDistributedSampler(DistributedSampler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.start_index = 0
+
+    def set_start_index(self, start_index: int):
+        self.start_index = max(0, int(start_index))
+
+    def __iter__(self):
+        if self.shuffle:
+            g = torch.Generator()
+            g.manual_seed(self.seed + self.epoch)
+            indices = torch.randperm(len(self.dataset), generator=g).tolist()
+        else:
+            indices = list(range(len(self.dataset)))
+
+        if not self.drop_last:
+            padding_size = self.total_size - len(indices)
+            if padding_size <= len(indices):
+                indices += indices[:padding_size]
+            else:
+                repeat_times = math.ceil(padding_size / len(indices))
+                indices += (indices * repeat_times)[:padding_size]
+        else:
+            indices = indices[:self.total_size]
+
+        indices = indices[self.rank:self.total_size:self.num_replicas]
+
+        start = min(self.start_index, len(indices))
+        indices = indices[start:]
+        return iter(indices)
+
+    def __len__(self):
+        return max(0, self.num_samples - min(self.start_index, self.num_samples))
+
 def malware_collate_fn(batch: list[dict]) -> dict:
     input_ids = [x["input_ids"] for x in batch]
     masks = [x["attention_mask"] for x in batch]
     labels = [x["label"] for x in batch]
     
-    return {
+    res = {
         "input_ids": torch.stack(input_ids), 
         "attention_mask": torch.stack(masks),     
         "labels": torch.stack(labels),    
     }
+    if "idx" in batch[0]:
+        indices = [x["idx"] for x in batch]
+        res["idx"] = torch.stack(indices)
+    return res
 
 class LiLMMalDataset(Dataset):
     SYSTEM_PROMPT = (
@@ -121,21 +162,23 @@ class LiLMMalDataset(Dataset):
             "input_ids": encoded["input_ids"],      
             "attention_mask": encoded["attention_mask"], 
             "label": torch.tensor(sample["label"], dtype=torch.long),
+            "idx": torch.tensor(idx, dtype=torch.long),
         }
 
 class LiLMMalDataLoader(DataLoader):
-    def __init__(self, dataset: LiLMMalDataset, config, sampler: DistributedSampler | None = None, shuffle: bool = True):
+    def __init__(self, dataset: LiLMMalDataset, config, sampler: DistributedSampler | None = None, shuffle: bool = True, is_test: bool = False):
+        batch_size = getattr(config, "test_batch_size", config.batch_size) if is_test else config.batch_size
         super().__init__(
             dataset,
-            batch_size=config.batch_size,
+            batch_size=batch_size,
             shuffle=(shuffle and sampler is None),
             num_workers=config.num_workers,
             sampler=sampler,
             collate_fn=malware_collate_fn,
             pin_memory=True,
-            drop_last=True if sampler is not None else False,
+            drop_last=(not is_test) and (True if sampler is not None else False),
             persistent_workers=True if config.num_workers > 0 else False,
-            prefetch_factor=4 if config.num_workers > 0 else None,
+            prefetch_factor=config.prefetch_factor if config.num_workers > 0 else None,
         )
 
 def build_loaders(config, tokenizer) -> tuple[DataLoader, DataLoader, DataLoader]:
@@ -166,7 +209,7 @@ def build_loaders(config, tokenizer) -> tuple[DataLoader, DataLoader, DataLoader
     train_sampler = None
     test_sampler = None
     if _is_dist and config.use_distributed_sampler:
-        train_sampler = DistributedSampler(
+        train_sampler = OffsetDistributedSampler(
             train_ds,
             num_replicas=dist.get_world_size(),
             rank=dist.get_rank(),
@@ -183,7 +226,7 @@ def build_loaders(config, tokenizer) -> tuple[DataLoader, DataLoader, DataLoader
 
     train_loader = LiLMMalDataLoader(train_ds, config, sampler=train_sampler)
     val_loader = LiLMMalDataLoader(val_ds, config, shuffle=False)
-    test_loader = LiLMMalDataLoader(test_ds, config, sampler=test_sampler, shuffle=False)
+    test_loader = LiLMMalDataLoader(test_ds, config, sampler=test_sampler, shuffle=False, is_test=True)
 
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     if local_rank == 0:

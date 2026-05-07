@@ -19,13 +19,23 @@ import wandb
 
 
 
-def save_fsdp_model(model, rank, config, epoch, is_best=False, step=None):
+def save_fsdp_model(model, optimizer, scheduler, rank, config, epoch, global_step, best_f1, is_best=False, step=None):
     save_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
     with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, save_policy):
         cpu_state = model.state_dict()
     
     if rank == 0:
         os.makedirs(config.output_dir, exist_ok=True)
+
+        checkpoint = {
+            "model_state_dict": cpu_state,
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
+            "epoch": epoch,
+            "global_step": global_step,
+            "best_f1": best_f1,
+        }
+
         if is_best:
             fname = config.best_checkpoint_name
         elif step is not None:
@@ -34,7 +44,8 @@ def save_fsdp_model(model, rank, config, epoch, is_best=False, step=None):
             fname = f"qwen_malware_ep{epoch}.pt"
             
         save_path = os.path.join(config.output_dir, fname)
-        torch.save(cpu_state, save_path)
+        torch.save(checkpoint, save_path)
+        print(f"[info] [rank 0] checkpoint salvat: {save_path}")
 
         if step is not None and not is_best:
             pattern = os.path.join(config.output_dir, "qwen_malware_ep*_step*.pt")
@@ -159,16 +170,31 @@ def train(
     epochs: int,
     grad_accum_steps: int,
     rank: int,
-    config
+    config,
+    start_global_step: int = 0,
+    start_best_f1: float = -1.0,
 ) -> None:
     is_distributed = dist.is_available() and dist.is_initialized()
-    best_f1_score = -1.0
-    global_step = 0
+    best_f1_score = float(start_best_f1)
+    global_step = max(0, int(start_global_step))
+    resume_micro_batches = global_step * grad_accum_steps
 
     for epoch in range(epochs):
         model.train()
         if is_distributed and hasattr(train_loader, "sampler") and hasattr(train_loader.sampler, "set_epoch"):
             train_loader.sampler.set_epoch(epoch)
+
+        if hasattr(train_loader, "sampler") and hasattr(train_loader.sampler, "set_start_index"):
+            if epoch == 0 and resume_micro_batches > 0:
+                samples_to_skip = resume_micro_batches * train_loader.batch_size
+                train_loader.sampler.set_start_index(samples_to_skip)
+                if rank == 0:
+                    print(
+                        f"[info] resume activ: skip {resume_micro_batches} batches locale "
+                        f"({samples_to_skip} samples/rank)"
+                    )
+            else:
+                train_loader.sampler.set_start_index(0)
 
         optimizer.zero_grad()
         step_start_time = time.time()
@@ -227,7 +253,18 @@ def train(
                 step_start_time = time.time()
 
                 if global_step % config.save_every_n_steps == 0 and global_step > 0:
-                    save_fsdp_model(model, rank, config, epoch, is_best=False, step=global_step)
+                    save_fsdp_model(
+                        model=model,
+                        optimizer=optimizer,
+                        scheduler=scheduler,
+                        rank=rank,
+                        config=config,
+                        epoch=epoch,
+                        global_step=global_step,
+                        best_f1=best_f1_score,
+                        is_best=False,
+                        step=global_step,
+                    )
 
                 if global_step % config.evaluate_every_n_steps == 0 and global_step > 0:
                     metrics = evaluate(model, valid_loader, rank)
@@ -255,7 +292,17 @@ def train(
                     if is_distributed:
                         dist.broadcast(best_flag, src=0)
                     if best_flag.item() == 1:
-                        save_fsdp_model(model, rank, config, epoch, is_best=True)
+                        save_fsdp_model(
+                            model=model,
+                            optimizer=optimizer,
+                            scheduler=scheduler,
+                            rank=rank,
+                            config=config,
+                            epoch=epoch,
+                            global_step=global_step,
+                            best_f1=best_f1_score,
+                            is_best=True,
+                        )
                             
                     model.train()
 
@@ -284,6 +331,26 @@ def train(
         if is_distributed:
             dist.broadcast(best_epoch_flag, src=0)
         if best_epoch_flag.item() == 1:
-            save_fsdp_model(model, rank, config, epoch, is_best=True)
+            save_fsdp_model(
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                rank=rank,
+                config=config,
+                epoch=epoch,
+                global_step=global_step,
+                best_f1=best_f1_score,
+                is_best=True,
+            )
 
-        save_fsdp_model(model, rank, config, epoch, is_best=False)
+        save_fsdp_model(
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            rank=rank,
+            config=config,
+            epoch=epoch,
+            global_step=global_step,
+            best_f1=best_f1_score,
+            is_best=False,
+        )
