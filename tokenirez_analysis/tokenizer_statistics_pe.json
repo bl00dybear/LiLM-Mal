@@ -1,0 +1,29 @@
+{
+    "cores_used": 80,
+    "total_files": 4549,
+    "mean": 33777.9,
+    "median": 5401,
+    "p90": 110112,
+    "max": 772304,
+    "token_budget": 8156,
+    "truncated_files": 2036,
+    "loss_percentage": 44.76,
+    "bucket_statistics": {
+        "0-100": {
+            "malware": 175,
+            "benign": 74
+        },
+        "100-2000": {
+            "malware": 499,
+            "benign": 1025
+        },
+        "2000-8156": {
+            "malware": 438,
+            "benign": 302
+        },
+        "8156-inf": {
+            "malware": 896,
+            "benign": 1140
+        }
+    }
+}

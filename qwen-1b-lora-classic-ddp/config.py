@@ -26,7 +26,7 @@ class Qwen15BConfig:
     lora_rank: int = 16
     lora_alpha: int = 16
     lora_target_modules: list[str] = field(
-        default_factory=lambda: ["q_proj", "v_proj"]
+        default_factory=lambda: ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
     )
     adapt_bias: bool = False
 
@@ -40,9 +40,9 @@ class Qwen15BConfig:
     gradient_checkpointing: bool = True
     use_distributed_sampler: bool = True
 
-    output_dir: str = "outputs/checkpoints-q1.5b-lora-classic"
+    output_dir: str = "outputs/checkpoints-q1.5b-lora-full"
     best_checkpoint_name: str = "qwen_malware_best.pt"
     test_checkpoint_name: str = "qwen_malware_ep0.pt"
-    plot_dir: str = "outputs/plots/qwen1.5-lora-classic"
+    plot_dir: str = "outputs/plots/qwen1.5-lora-full"
 
     resume_checkpoint_path: str | None = None

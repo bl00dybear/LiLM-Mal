@@ -30,12 +30,13 @@ def process_file_optimized(file_path):
         
         tokens = _tokenizer(code, add_special_tokens=False)["input_ids"]
         length = len(tokens)
-        return (length, 1 if length > _budget else 0)
+        cat = "malware" if "malware" in str(file_path) else "benign"
+        return (length, 1 if length > _budget else 0, cat)
     except:
         return None
 
 def main():
-    base_path = Path("/media/sebi/nvme-1tb/LiLM-Mal-Dataset/decompiled-dataset/train")
+    base_path = Path("/media/sebi/nvme-1tb/LiLM-Mal-Dataset/decompiled-cv-pe-2/test")
     model_path = "/media/sebi/nvme-1tb/LiLM-Mal/models/qwen2.5-coder-1.5b-instruct"
     num_workers = cpu_count()
     
@@ -58,10 +59,27 @@ def main():
             desc="Dataset analysis"
         ))
 
+    bucket_counts = {
+        "0-100": {"malware": 0, "benign": 0},
+        "100-2000": {"malware": 0, "benign": 0},
+        "2000-8156": {"malware": 0, "benign": 0},
+        "8156-inf": {"malware": 0, "benign": 0}
+    }
+
     for res in results:
         if res:
-            lengths.append(res[0])
-            truncated_count += res[1]
+            length, is_trunc, cat = res
+            lengths.append(length)
+            truncated_count += is_trunc
+            
+            if length <= 100:
+                bucket_counts["0-100"][cat] += 1
+            elif length <= 2000:
+                bucket_counts["100-2000"][cat] += 1
+            elif length <= 8156:
+                bucket_counts["2000-8156"][cat] += 1
+            else:
+                bucket_counts["8156-inf"][cat] += 1
 
     if not lengths:
         return
@@ -87,6 +105,14 @@ def main():
     print(f"Files truncated at {kode_budget}: {truncated_count}")
     print(f"Loss percentage: {(truncated_count/n)*100:.2f}%")
     print("="*50)
+    
+    print("\n" + "="*50)
+    print("BUCKET & CATEGORY STATISTICS")
+    print("="*50)
+    for b, cats in bucket_counts.items():
+        total_b = cats['malware'] + cats['benign']
+        print(f"Bucket {b:<10} : {total_b:<6} files (Malware: {cats['malware']:<5} | Benign: {cats['benign']:<5})")
+    print("="*50)
 
     stats_dict = {
         "cores_used": num_workers,
@@ -97,7 +123,8 @@ def main():
         "max": max_len,
         "token_budget": kode_budget,
         "truncated_files": truncated_count,
-        "loss_percentage": round((truncated_count/n)*100, 2)
+        "loss_percentage": round((truncated_count/n)*100, 2),
+        "bucket_statistics": bucket_counts
     }
 
     with open("tokenizer_statistics.json", "w", encoding="utf-8") as f:
