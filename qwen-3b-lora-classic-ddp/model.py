@@ -60,9 +60,6 @@ def inject_lora_simple(
     adapt_bias: bool = False,
 ) -> None:
     for name, module in list(backbone.named_modules()):
-        if not name.endswith("self_attn"):
-            continue
-
         for linear_name in target_modules:
             if not hasattr(module, linear_name):
                 continue

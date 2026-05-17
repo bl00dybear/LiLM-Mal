@@ -29,7 +29,7 @@ def main_worker(rank, config):
     if rank == 0:
         wandb.init(
             project="LiLM-Malware-Detection",
-            name=f"qwen-3b-ddp-ctx{config.max_token_len}-lora-attention-sampled",
+            name=f"qwen-3b-ddp-ctx{config.max_token_len}-lora-full-sampled",
             config=asdict(config),
         )
 
