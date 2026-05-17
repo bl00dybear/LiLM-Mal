@@ -1,6 +1,7 @@
 import json
 import os
 import math
+import csv
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
@@ -53,7 +54,7 @@ class LiLMPEDataset(Dataset):
         self.tok.padding_side = "left"
         self.max_len = config.max_token_len
         self.num_chunks = config.num_chunks
-        self.base = Path("/media/sebi/nvme-1tb/LiLM-Mal-Dataset/decompiled-cv-pe/test")
+        self.base = Path("/home/sebi/LiLM-Mal/dataset/decompiled-pe-subsampled/subsampled/test")
         
         empty_prompt = self._build_prompt("")
         prompt_overhead = self.tok(empty_prompt, return_tensors="pt")["input_ids"].shape[1]
@@ -70,22 +71,15 @@ class LiLMPEDataset(Dataset):
                 files = list(target_dir.glob("*.json"))
                 
                 iterator = files
-                if local_rank == 0:
-                    iterator = tqdm(files, desc=f"Filtering {name} (<100 tokens)")
-                    
                 for f in iterator:
                     try:
                         with open(f, "r", encoding="utf-8") as file:
                             data = json.load(file)
                         code = data.get("decompiled_code") or ""
-                        # Fast rejection for very small strings
                         if len(code) < 50:
                             continue
                             
-                        # Encode to check token count
-                        tokens = self.tok(code, add_special_tokens=False)["input_ids"]
-                        if len(tokens) >= 100:
-                            samples.append({"path": str(f), "label": label_int})
+                        samples.append({"path": str(f), "label": label_int})
                     except Exception:
                         pass
         samples.sort(key=lambda x: x["path"])
@@ -231,6 +225,7 @@ def eval_worker(rank, config):
         all_preds_local = []
         all_labels_local = []
         all_probs_local = []
+        all_logits_local = []
         all_idx_local = []
 
         pbar = tqdm(test_loader, desc=f"Testing [Rank {rank}]") if rank == 0 else test_loader
@@ -246,27 +241,32 @@ def eval_worker(rank, config):
                 probs = torch.sigmoid(logits)
                 preds = (probs > 0.5).float()
 
+                all_logits_local.append(logits.float())
                 all_probs_local.append(probs.float())
                 all_preds_local.append(preds.float())
                 all_labels_local.append(labels.float())
                 all_idx_local.append(indices.long())
 
+        logits_t = torch.cat(all_logits_local).float()
         probs_t = torch.cat(all_probs_local).float()
         preds_t = torch.cat(all_preds_local).float()
         labels_t = torch.cat(all_labels_local).float()
         idx_t = torch.cat(all_idx_local).long()
 
+        gathered_logits = [torch.zeros_like(logits_t) for _ in range(config.world_size)]
         gathered_probs = [torch.zeros_like(probs_t) for _ in range(config.world_size)]
         gathered_preds = [torch.zeros_like(preds_t) for _ in range(config.world_size)]
         gathered_labels = [torch.zeros_like(labels_t) for _ in range(config.world_size)]
         gathered_idx = [torch.zeros_like(idx_t) for _ in range(config.world_size)]
 
+        dist.all_gather(gathered_logits, logits_t)
         dist.all_gather(gathered_probs, probs_t)
         dist.all_gather(gathered_preds, preds_t)
         dist.all_gather(gathered_labels, labels_t)
         dist.all_gather(gathered_idx, idx_t)
 
         if rank == 0:
+            all_logits_raw = torch.cat(gathered_logits).float().cpu().numpy()
             all_probs_raw = torch.cat(gathered_probs).float().cpu().numpy()
             all_preds_raw = torch.cat(gathered_preds).float().cpu().numpy()
             all_labels_raw = torch.cat(gathered_labels).float().cpu().numpy()
@@ -280,6 +280,7 @@ def eval_worker(rank, config):
             sorted_keys = sorted(unique_indices.keys())
             dedup_indices = [unique_indices[k] for k in sorted_keys]
 
+            all_logits = all_logits_raw[dedup_indices]
             all_probs = all_probs_raw[dedup_indices]
             all_preds = all_preds_raw[dedup_indices]
             all_labels = all_labels_raw[dedup_indices]
@@ -318,6 +319,20 @@ def eval_worker(rank, config):
                 json.dump(metrics, f, indent=4)
 
             print(f"\nMetrics saved to {out_file}")
+
+            csv_file = os.path.join(config.output_dir, "test_results_pe.csv")
+            with open(csv_file, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(["filename", "logit", "label", "pred", "prob"])
+                for i, idx in enumerate(sorted_keys):
+                    sample = test_loader.dataset.samples[int(idx)]
+                    filename = Path(sample["path"]).name
+                    logit_val = float(all_logits[i])
+                    label_val = int(all_labels[i])
+                    pred_val = int(all_preds[i])
+                    prob_val = float(all_probs[i])
+                    writer.writerow([filename, logit_val, label_val, pred_val, prob_val])
+            print(f"Results saved to {csv_file}")
     finally:
         cleanup()
 
