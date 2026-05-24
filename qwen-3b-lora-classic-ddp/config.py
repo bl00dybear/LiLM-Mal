@@ -2,11 +2,11 @@ from dataclasses import dataclass, field
 
 
 @dataclass
-class Qwen15BConfig:
+class Qwen3BConfig:
     world_size: int = 2
 
     model_name: str = "Qwen/Qwen2.5-Coder-3B-Instruct"
-    model_path: str = "/media/sebi/nvme-1tb/LiLM-Mal/models/qwen2.5-coder-3b-instruct"
+    model_path: str = "/run/media/sebi/nvme-1tb/LiLM-Mal/models/qwen2.5-coder-3b-instruct"
 
     num_labels: int = 2
     num_layers: int = 28
@@ -26,7 +26,7 @@ class Qwen15BConfig:
     lora_rank: int = 16
     lora_alpha: int = 16
     lora_target_modules: list[str] = field(
-        default_factory=lambda: ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+        default_factory=lambda: ["q_proj", "v_proj","k_proj","o_proj","up_proj","down_proj","gate_proj"]
     )
     adapt_bias: bool = False
 

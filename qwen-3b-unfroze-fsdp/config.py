@@ -5,7 +5,7 @@ class Quen3BConfig:
     world_size:                 int = 2
 
     model_name:                 str = "Qwen/Qwen2.5-Coder-3B-Instruct"
-    model_path:                 str = "/media/sebi/nvme-1tb/LiLM-Mal/models/qwen2.5-coder-3b-instruct"
+    model_path:                 str = "/run/media/sebi/nvme-1tb/LiLM-Mal/models/qwen2.5-coder-3b-instruct"
 
     num_labels:                 int = 2
     num_layers:                 int = 36 

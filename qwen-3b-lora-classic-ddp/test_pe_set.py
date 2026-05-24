@@ -11,7 +11,7 @@ from pathlib import Path
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
-from config import Qwen15BConfig
+from config import Qwen3BConfig
 from model import MalwareDetectionModel
 from utils import setup, cleanup, load_model_ddp
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
@@ -337,7 +337,7 @@ def eval_worker(rank, config):
         cleanup()
 
 def main():
-    config = Qwen15BConfig()
+    config = Qwen3BConfig()
     print(f"Starting PE test script with {config.world_size} GPUs...")
     mp.spawn(
         eval_worker,
