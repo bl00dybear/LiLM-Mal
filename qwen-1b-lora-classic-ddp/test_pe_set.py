@@ -54,7 +54,7 @@ class LiLMPEDataset(Dataset):
         self.tok.padding_side = "left"
         self.max_len = config.max_token_len
         self.num_chunks = config.num_chunks
-        self.base = Path("/home/sebi/LiLM-Mal/dataset/decompiled-pe-subsampled/subsampled/test")
+        self.base = Path("/run/media/sebi/nvme-1tb/LiLM-Mal-Dataset/pe-decompiled/subsampled/test")
         
         empty_prompt = self._build_prompt("")
         prompt_overhead = self.tok(empty_prompt, return_tensors="pt")["input_ids"].shape[1]
@@ -247,30 +247,29 @@ def eval_worker(rank, config):
                 all_labels_local.append(labels.float())
                 all_idx_local.append(indices.long())
 
-        logits_t = torch.cat(all_logits_local).float()
-        probs_t = torch.cat(all_probs_local).float()
-        preds_t = torch.cat(all_preds_local).float()
-        labels_t = torch.cat(all_labels_local).float()
-        idx_t = torch.cat(all_idx_local).long()
+        logits_t = torch.cat(all_logits_local).float().cpu()
+        probs_t = torch.cat(all_probs_local).float().cpu()
+        preds_t = torch.cat(all_preds_local).float().cpu()
+        labels_t = torch.cat(all_labels_local).float().cpu()
+        idx_t = torch.cat(all_idx_local).long().cpu()
 
-        gathered_logits = [torch.zeros_like(logits_t) for _ in range(config.world_size)]
-        gathered_probs = [torch.zeros_like(probs_t) for _ in range(config.world_size)]
-        gathered_preds = [torch.zeros_like(preds_t) for _ in range(config.world_size)]
-        gathered_labels = [torch.zeros_like(labels_t) for _ in range(config.world_size)]
-        gathered_idx = [torch.zeros_like(idx_t) for _ in range(config.world_size)]
+        local_data = {
+            "logits": logits_t,
+            "probs": probs_t,
+            "preds": preds_t,
+            "labels": labels_t,
+            "idx": idx_t
+        }
 
-        dist.all_gather(gathered_logits, logits_t)
-        dist.all_gather(gathered_probs, probs_t)
-        dist.all_gather(gathered_preds, preds_t)
-        dist.all_gather(gathered_labels, labels_t)
-        dist.all_gather(gathered_idx, idx_t)
+        gathered_data = [None for _ in range(config.world_size)]
+        dist.all_gather_object(gathered_data, local_data)
 
         if rank == 0:
-            all_logits_raw = torch.cat(gathered_logits).float().cpu().numpy()
-            all_probs_raw = torch.cat(gathered_probs).float().cpu().numpy()
-            all_preds_raw = torch.cat(gathered_preds).float().cpu().numpy()
-            all_labels_raw = torch.cat(gathered_labels).float().cpu().numpy()
-            all_idx_raw = torch.cat(gathered_idx).long().cpu().numpy()
+            all_logits_raw = torch.cat([d["logits"] for d in gathered_data]).numpy()
+            all_probs_raw = torch.cat([d["probs"] for d in gathered_data]).numpy()
+            all_preds_raw = torch.cat([d["preds"] for d in gathered_data]).numpy()
+            all_labels_raw = torch.cat([d["labels"] for d in gathered_data]).numpy()
+            all_idx_raw = torch.cat([d["idx"] for d in gathered_data]).numpy()
 
             unique_indices = {}
             for i, idx in enumerate(all_idx_raw):

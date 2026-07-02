@@ -32,12 +32,14 @@ class LiLMELFDataset(torch.utils.data.Dataset):
     )
     USER_FOOTER = "\n</code>"
 
+    CSV_PATH = "/run/media/sebi/nvme-1tb/LiLM-Mal-Dataset/dataset-splits/subsampled/test_10k_subsampled.csv"
+
     def __init__(self, tokenizer, config):
         self.tok = tokenizer
         self.tok.padding_side = "left"
         self.max_len = config.max_token_len
         self.num_chunks = config.num_chunks
-        self.base = Path("/home/sebi/LiLM-Mal/dataset/decompiled-elf-dataset/subsampled/test")
+        self.base = Path("/run/media/sebi/nvme-1tb/LiLM-Mal-Dataset/elf-decompiled-dataset/subsampled/test")
 
         empty_prompt = self._build_prompt("")
         prompt_overhead = self.tok(empty_prompt, return_tensors="pt")["input_ids"].shape[1]
@@ -45,15 +47,30 @@ class LiLMELFDataset(torch.utils.data.Dataset):
 
         self.samples = self._index()
 
+    def _load_excluded_hashes(self) -> set[str]:
+        excluded = set()
+        with open(self.CSV_PATH, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if row["source"].strip() == "assemblage":
+                    excluded.add(row["sha256"].strip())
+        return excluded
+
     def _index(self) -> list[dict]:
+        excluded_hashes = self._load_excluded_hashes()
         samples = []
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        skipped = 0
         for label_int, name in [(0, "benign"), (1, "malware")]:
             target_dir = self.base / name
             if target_dir.exists():
                 files = list(target_dir.glob("*.json"))
                 iterator = files
                 for f in iterator:
+                    sha256 = f.stem
+                    if sha256 in excluded_hashes:
+                        skipped += 1
+                        continue
                     try:
                         with open(f, "r", encoding="utf-8") as file:
                             data = json.load(file)
@@ -64,6 +81,8 @@ class LiLMELFDataset(torch.utils.data.Dataset):
                     except Exception:
                         pass
         samples.sort(key=lambda x: x["path"])
+        if local_rank == 0:
+            print(f"[info] [dataset-elf] excluded {skipped} assemblage samples")
         return samples
 
     def _load_code(self, path: str) -> str:
@@ -228,30 +247,29 @@ def eval_worker(rank, config):
                 all_labels_local.append(labels.float())
                 all_idx_local.append(indices.long())
 
-        logits_t = torch.cat(all_logits_local).float()
-        probs_t = torch.cat(all_probs_local).float()
-        preds_t = torch.cat(all_preds_local).float()
-        labels_t = torch.cat(all_labels_local).float()
-        idx_t = torch.cat(all_idx_local).long()
+        logits_t = torch.cat(all_logits_local).float().cpu()
+        probs_t = torch.cat(all_probs_local).float().cpu()
+        preds_t = torch.cat(all_preds_local).float().cpu()
+        labels_t = torch.cat(all_labels_local).float().cpu()
+        idx_t = torch.cat(all_idx_local).long().cpu()
 
-        gathered_logits = [torch.zeros_like(logits_t) for _ in range(config.world_size)]
-        gathered_probs = [torch.zeros_like(probs_t) for _ in range(config.world_size)]
-        gathered_preds = [torch.zeros_like(preds_t) for _ in range(config.world_size)]
-        gathered_labels = [torch.zeros_like(labels_t) for _ in range(config.world_size)]
-        gathered_idx = [torch.zeros_like(idx_t) for _ in range(config.world_size)]
+        local_data = {
+            "logits": logits_t,
+            "probs": probs_t,
+            "preds": preds_t,
+            "labels": labels_t,
+            "idx": idx_t
+        }
 
-        dist.all_gather(gathered_logits, logits_t)
-        dist.all_gather(gathered_probs, probs_t)
-        dist.all_gather(gathered_preds, preds_t)
-        dist.all_gather(gathered_labels, labels_t)
-        dist.all_gather(gathered_idx, idx_t)
+        gathered_data = [None for _ in range(config.world_size)]
+        dist.all_gather_object(gathered_data, local_data)
 
         if rank == 0:
-            all_logits_raw = torch.cat(gathered_logits).float().cpu().numpy()
-            all_probs_raw = torch.cat(gathered_probs).float().cpu().numpy()
-            all_preds_raw = torch.cat(gathered_preds).float().cpu().numpy()
-            all_labels_raw = torch.cat(gathered_labels).float().cpu().numpy()
-            all_idx_raw = torch.cat(gathered_idx).long().cpu().numpy()
+            all_logits_raw = torch.cat([d["logits"] for d in gathered_data]).numpy()
+            all_probs_raw = torch.cat([d["probs"] for d in gathered_data]).numpy()
+            all_preds_raw = torch.cat([d["preds"] for d in gathered_data]).numpy()
+            all_labels_raw = torch.cat([d["labels"] for d in gathered_data]).numpy()
+            all_idx_raw = torch.cat([d["idx"] for d in gathered_data]).numpy()
 
             unique_indices = {}
             for i, idx in enumerate(all_idx_raw):
@@ -294,14 +312,14 @@ def eval_worker(rank, config):
                 print(f"{k}: {v:.4f}")
 
             os.makedirs(config.output_dir, exist_ok=True)
-            out_file = os.path.join(config.output_dir, "test_metrics_elf.json")
+            out_file = os.path.join(config.output_dir, "test_metrics_elf_1_1.json")
 
             with open(out_file, 'w') as f:
                 json.dump(metrics, f, indent=4)
 
             print(f"\nMetrics saved to {out_file}")
 
-            csv_file = os.path.join(config.output_dir, "test_results_elf.csv")
+            csv_file = os.path.join(config.output_dir, "test_results_elf_1_1.csv")
             with open(csv_file, 'w', newline='') as f:
                 writer = csv.writer(f)
                 writer.writerow(["filename", "logit", "label", "pred", "prob"])

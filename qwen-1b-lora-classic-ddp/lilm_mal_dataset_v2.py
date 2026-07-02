@@ -1,3 +1,4 @@
+import csv
 import json
 import os
 import math
@@ -8,6 +9,9 @@ from pathlib import Path
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from transformers import PreTrainedTokenizer
+
+SPLITS_BASE = Path("/run/media/sebi/nvme-1tb/LiLM-Mal-Dataset/data/02_metadata/experiments")
+CORPUS_BASE = Path("/run/media/sebi/nvme-1tb/LiLM-Mal-Dataset/data/03_corpus_v2")
 
 LABEL_MAP = {0: "benign", 1: "malware"}
 
@@ -47,6 +51,7 @@ class OffsetDistributedSampler(DistributedSampler):
     def __len__(self):
         return max(0, self.num_samples - min(self.start_index, self.num_samples))
 
+
 def malware_collate_fn(batch: list[dict]) -> dict:
     input_ids = [x["input_ids"] for x in batch]
     masks = [x["attention_mask"] for x in batch]
@@ -61,6 +66,7 @@ def malware_collate_fn(batch: list[dict]) -> dict:
         indices = [x["idx"] for x in batch]
         res["idx"] = torch.stack(indices)
     return res
+
 
 class LiLMMalDataset(Dataset):
     SYSTEM_PROMPT = (
@@ -84,7 +90,8 @@ class LiLMMalDataset(Dataset):
         self.tok.padding_side = "left"
         self.max_len = config.max_token_len
         self.num_chunks = config.num_chunks
-        self.base = Path("/run/media/sebi/nvme-1tb/LiLM-Mal-Dataset/decompiled-40")
+        self.experiment_name = getattr(config, "experiment_name", "elf_v2_full")
+        self.platform = getattr(config, "platform", "elf")
         self.samples = self._index()
         if indices is not None:
             self.samples = [self.samples[i] for i in indices]
@@ -94,12 +101,22 @@ class LiLMMalDataset(Dataset):
         self._budget = max(self.max_len - prompt_overhead - 5, 100)
 
     def _index(self) -> list[dict]:
+        csv_path = SPLITS_BASE / self.experiment_name / f"{self.split}.csv"
         samples = []
-        for label_int, name in [(0, "benign"), (1, "malware")]:
-            target_dir = self.base / self.split / name
-            if target_dir.exists():
-                for f in target_dir.glob("*.json"):
-                    samples.append({"path": str(f), "label": label_int})
+        if not csv_path.exists():
+            print(f"Warning: {csv_path} not found.")
+            return samples
+        with open(csv_path, "r", newline="", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            for row in reader:
+                if not row:
+                    continue
+                label = int(row[0])
+                sha256 = row[1]
+                label_dir = "malware" if label == 1 else "benign"
+                json_path = CORPUS_BASE / self.platform / label_dir / f"{sha256}.json"
+                if json_path.exists():
+                    samples.append({"path": str(json_path), "label": label})
         samples.sort(key=lambda x: x["path"])
         return samples
 
@@ -165,6 +182,7 @@ class LiLMMalDataset(Dataset):
             "idx": torch.tensor(idx, dtype=torch.long),
         }
 
+
 class LiLMMalDataLoader(DataLoader):
     def __init__(self, dataset: LiLMMalDataset, config, sampler: DistributedSampler | None = None, shuffle: bool = True, is_test: bool = False):
         batch_size = getattr(config, "test_batch_size", config.batch_size) if is_test else config.batch_size
@@ -180,6 +198,7 @@ class LiLMMalDataLoader(DataLoader):
             persistent_workers=True if config.num_workers > 0 else False,
             prefetch_factor=config.prefetch_factor if config.num_workers > 0 else None,
         )
+
 
 def build_loaders(config, tokenizer) -> tuple[DataLoader, DataLoader, DataLoader]:
     full_ds = LiLMMalDataset(split="train", tokenizer=tokenizer, config=config)

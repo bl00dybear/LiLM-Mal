@@ -5,7 +5,7 @@ import torch.multiprocessing as mp
 from transformers import AutoTokenizer
 
 from config import Qwen15BConfig
-from lilm_mal_dataset import build_loaders
+from lilm_mal_dataset_v2 import build_loaders
 from train_logic import train
 from utils import setup, cleanup, load_model_ddp, load_training_checkpoint
 
@@ -28,8 +28,8 @@ def main_worker(rank, config):
 
     if rank == 0:
         wandb.init(
-            project="LiLM-Malware-Detection",
-            name=f"qwen-1.5b-ddp-ctx{config.max_token_len}-lora-full-2-sampled",
+            project="LiLM-Malware-Detection-v2",
+            name=f"qwen-1.5b-ddp-ctx{config.max_token_len}-lora-full-sampled",
             config=asdict(config),
         )
 

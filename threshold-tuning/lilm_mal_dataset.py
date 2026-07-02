@@ -111,9 +111,16 @@ class LiLMMalDataset(Dataset):
         except Exception:
             return ""
 
-    def _chunk_code(self, code: str) -> list[str]:
+    def _build_prompt(self, code: str) -> str:
+        return (
+            f"<|im_start|>system\n{self.SYSTEM_PROMPT}\n<|im_end|>\n"
+            f"<|im_start|>user\n{self.USER_HEADER}{code}{self.USER_FOOTER}\n<|im_end|>\n"
+            f"<|im_start|>assistant\n"
+        )
+
+    def _chunk_code(self, code: str) -> torch.Tensor:
         if not code:
-            return [""] * self.num_chunks
+            return torch.zeros((self.num_chunks, self._budget), dtype=torch.long)
             
         full_tokens = self.tok(
             code, 
@@ -123,23 +130,37 @@ class LiLMMalDataset(Dataset):
             return_tensors="pt"
         )["input_ids"][0]
         
-        chunks = []
+        chunks_list = []
         for i in range(self.num_chunks):
             start = i * self._budget
             end = start + self._budget
             chunk_ids = full_tokens[start:end]
-            if len(chunk_ids) > 0:
-                chunks.append(self.tok.decode(chunk_ids, skip_special_tokens=False))
-            else:
-                chunks.append("")
-        return chunks
+            if len(chunk_ids) < self._budget:
+                pad_len = self._budget - len(chunk_ids)
+                chunk_ids = torch.cat([chunk_ids, torch.full((pad_len,), self.tok.pad_token_id, dtype=torch.long)])
+            chunks_list.append(chunk_ids)
+        
+        return torch.stack(chunks_list)
 
-    def _build_prompt(self, code: str) -> str:
-        return (
-            f"<|im_start|>system\n{self.SYSTEM_PROMPT}\n<|im_end|>\n"
-            f"<|im_start|>user\n{self.USER_HEADER}{code}{self.USER_FOOTER}\n<|im_end|>\n"
-            f"<|im_start|>assistant\n"
-        )
+    def _build_prompt_ids(self, chunk_ids: torch.Tensor) -> dict:
+        # Construim prompt-ul direct la nivel de ID-uri pentru viteză
+        system_ids = self.tok(f"<|im_start|>system\n{self.SYSTEM_PROMPT}\n<|im_end|>\n", add_special_tokens=False, return_tensors="pt")["input_ids"][0]
+        user_start_ids = self.tok(f"<|im_start|>user\n{self.USER_HEADER}", add_special_tokens=False, return_tensors="pt")["input_ids"][0]
+        user_end_ids = self.tok(f"{self.USER_FOOTER}\n<|im_end|>\n<|im_start|>assistant\n", add_special_tokens=False, return_tensors="pt")["input_ids"][0]
+        
+        # Combinăm ID-urile
+        # Notă: Aceasta este o simplificare, în mod normal ar trebui să fim atenți la lungimea totală
+        final_ids = torch.cat([system_ids, user_start_ids, chunk_ids, user_end_ids])
+        
+        # Padding/Truncation manual la max_len
+        if len(final_ids) > self.max_len:
+            final_ids = final_ids[:self.max_len]
+        else:
+            pad_len = self.max_len - len(final_ids)
+            # Padding la stânga conform setării tale
+            final_ids = torch.cat([torch.full((pad_len,), self.tok.pad_token_id, dtype=torch.long), final_ids])
+            
+        return final_ids
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -147,20 +168,45 @@ class LiLMMalDataset(Dataset):
     def __getitem__(self, idx: int) -> dict:
         sample = self.samples[idx]
         code = self._load_code(sample["path"])
-        chunks = self._chunk_code(code)
         
-        prompts = [self._build_prompt(c) for c in chunks]
-        encoded = self.tok(
-            prompts, 
-            max_length=self.max_len, 
+        # Tokenizăm o singură dată
+        full_tokens = self.tok(
+            code, 
+            add_special_tokens=False, 
             truncation=True, 
-            padding="max_length", 
+            max_length=self._budget * self.num_chunks, 
             return_tensors="pt"
-        )
+        )["input_ids"][0]
+
+        all_input_ids = []
+        all_attn_masks = []
+
+        for i in range(self.num_chunks):
+            start = i * self._budget
+            end = start + self._budget
+            chunk_ids = full_tokens[start:end]
+            
+            # Construim prompt-ul (folosind string template pentru siguranță, dar pe text scurt)
+            chunk_text = self.tok.decode(chunk_ids, skip_special_tokens=False)
+            prompt = (
+                f"<|im_start|>system\n{self.SYSTEM_PROMPT}\n<|im_end|>\n"
+                f"<|im_start|>user\n{self.USER_HEADER}{chunk_text}{self.USER_FOOTER}\n<|im_end|>\n"
+                f"<|im_start|>assistant\n"
+            )
+            
+            encoded = self.tok(
+                prompt,
+                max_length=self.max_len,
+                truncation=True,
+                padding="max_length",
+                return_tensors="pt"
+            )
+            all_input_ids.append(encoded["input_ids"][0])
+            all_attn_masks.append(encoded["attention_mask"][0])
         
         return {
-            "input_ids": encoded["input_ids"],      
-            "attention_mask": encoded["attention_mask"], 
+            "input_ids": torch.stack(all_input_ids),      
+            "attention_mask": torch.stack(all_attn_masks), 
             "label": torch.tensor(sample["label"], dtype=torch.long),
             "idx": torch.tensor(idx, dtype=torch.long),
         }

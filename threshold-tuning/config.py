@@ -1,24 +1,467 @@
-from dataclasses import dataclass,field
+from dataclasses import dataclass, field
+
 
 @dataclass
-class ThresholdConfig:
-    models_csvs:   list[str] = field(
-        default_factory=lambda: [
-            "outputs/checkpoints-q1.5b/test_results_elf.csv",
-            "outputs/checkpoints-q1.5b/test_results_pe.csv",
-            "outputs/checkpoints-q1.5b-lora-classic/test_results_elf.csv",
-            "outputs/checkpoints-q1.5b-lora-classic/test_results_pe.csv",
-            "outputs/checkpoints-q1.5b-lora-attention/test_results_elf.csv",
-            "outputs/checkpoints-q1.5b-lora-attention/test_results_pe.csv",
-            "outputs/checkpoints-q1.5b-lora-full/test_results_elf.csv",
-            "outputs/checkpoints-q1.5b-lora-full/test_results_pe.csv",
-            "outputs/checkpoints-q3b/test_results_elf.csv",
-            "outputs/checkpoints-q3b/test_results_pe.csv",
-            "outputs/checkpoints-q3b-lora-classic/test_results_elf.csv",
-            "outputs/checkpoints-q3b-lora-classic/test_results_pe.csv",
-            "outputs/checkpoints-q3b-lora-attention/test_results_elf.csv",
-            "outputs/checkpoints-q3b-lora-attention/test_results_pe.csv",
-            "outputs/checkpoints-q3b-lora-full/test_results_elf_1_9.csv",
-            "outputs/checkpoints-q3b-lora-full/test_results_pe.csv",
-        ]    
+class Qwen15BConfig:
+    world_size:                 int = 2
+
+    model_name:                 str = "Qwen/Qwen2.5-Coder-1.5B-Instruct"
+    model_path:                 str = "/run/media/sebi/nvme-1tb/LiLM-Mal/models/qwen2.5-coder-1.5b-instruct"
+
+    num_labels:                 int = 2
+    num_layers:                 int = 28
+
+    max_token_len:              int = 4096
+    num_chunks:                 int = 2
+
+    batch_size:                 int = 2
+    test_batch_size:            int = 2
+    num_workers:                int = 16
+    save_every_n_steps:         int = 10
+    evaluate_every_n_steps:     int = 50
+    pin_memory:                 bool = True
+    persistent_workers:         bool = True
+    prefetch_factor:            int = 4
+
+    n_unfrozen_layers:          int = 6
+    grad_accum_steps:           int = 16
+    learning_rate:              float = 5e-6
+    weight_decay:               float = 0.01
+    adam_momentum:              float = 0.9
+    adam_scaling:               float = 0.95
+    epochs:                     int = 3
+
+    gradient_checkpointing:     bool = True
+    use_distributed_sampler:    bool = True
+
+    output_dir:                 str = "outputs/checkpoints-q1.5b"
+    best_checkpoint_name:       str = "qwen_malware_best.pt"
+    test_checkpoint_name:       str = "qwen_malware_ep0.pt"
+    plot_dir:                   str = "outputs/plots/qwen1.5"
+
+    resume_checkpoint_path:     str | None = None
+
+
+@dataclass
+class Qwen15BLoraClassicConfig:
+    world_size: int = 2
+
+    model_name: str = "Qwen/Qwen2.5-Coder-1.5B-Instruct"
+    model_path: str = "/run/media/sebi/nvme-1tb/LiLM-Mal/models/qwen2.5-coder-1.5b-instruct"
+
+    num_labels: int = 2
+    num_layers: int = 28
+
+    max_token_len: int = 4096
+    num_chunks: int = 2
+
+    batch_size: int = 2
+    test_batch_size: int = 8
+    num_workers: int = 16
+    save_every_n_steps: int = 10
+    evaluate_every_n_steps: int = 50
+    pin_memory: bool = True
+    persistent_workers: bool = True
+    prefetch_factor: int = 4
+
+    lora_rank: int = 16
+    lora_alpha: int = 16
+    lora_target_modules: list[str] = field(
+        default_factory=lambda: ["q_proj", "v_proj"]
     )
+    adapt_bias: bool = False
+
+    grad_accum_steps: int = 16
+    learning_rate: float = 5e-6
+    weight_decay: float = 0.01
+    adam_momentum: float = 0.9
+    adam_scaling: float = 0.95
+    epochs: int = 1
+
+    gradient_checkpointing: bool = True
+    use_distributed_sampler: bool = True
+
+    output_dir: str = "outputs/checkpoints-q1.5b-lora-classic"
+    best_checkpoint_name: str = "qwen_malware_best.pt"
+    test_checkpoint_name: str = "qwen_malware_ep0.pt"
+    plot_dir: str = "outputs/plots/qwen1.5-lora-full-classic"
+
+    resume_checkpoint_path: str | None = None
+
+
+@dataclass
+class Qwen15BLoraAttentionConfig:
+    world_size: int = 2
+
+    model_name: str = "Qwen/Qwen2.5-Coder-1.5B-Instruct"
+    model_path: str = "/run/media/sebi/nvme-1tb/LiLM-Mal/models/qwen2.5-coder-1.5b-instruct"
+
+    num_labels: int = 2
+    num_layers: int = 28
+
+    max_token_len: int = 4096
+    num_chunks: int = 2
+
+    batch_size: int = 2
+    test_batch_size: int = 8
+    num_workers: int = 16
+    save_every_n_steps: int = 10
+    evaluate_every_n_steps: int = 50
+    pin_memory: bool = True
+    persistent_workers: bool = True
+    prefetch_factor: int = 4
+
+    lora_rank: int = 16
+    lora_alpha: int = 16
+    lora_target_modules: list[str] = field(
+        default_factory=lambda: ["q_proj", "v_proj", "k_proj", "o_proj"]
+    )
+    adapt_bias: bool = False
+
+    grad_accum_steps: int = 16
+    learning_rate: float = 5e-6
+    weight_decay: float = 0.01
+    adam_momentum: float = 0.9
+    adam_scaling: float = 0.95
+    epochs: int = 1
+
+    gradient_checkpointing: bool = True
+    use_distributed_sampler: bool = True
+
+    output_dir: str = "outputs/checkpoints-q1.5b-lora-attention"
+    best_checkpoint_name: str = "qwen_malware_best.pt"
+    test_checkpoint_name: str = "qwen_malware_ep0.pt"
+    plot_dir: str = "outputs/plots/qwen1.5-lora-attention"
+
+    resume_checkpoint_path: str | None = None
+
+
+@dataclass
+class Qwen15BLoraFullConfig19M:
+    world_size: int = 2
+
+    model_name: str = "Qwen/Qwen2.5-Coder-1.5B-Instruct"
+    model_path: str = "/run/media/sebi/nvme-1tb/LiLM-Mal/models/qwen2.5-coder-1.5b-instruct"
+
+    num_labels: int = 2
+    num_layers: int = 28
+
+    max_token_len: int = 4096
+    num_chunks: int = 2
+
+    batch_size: int = 2
+    test_batch_size: int = 4
+    num_workers: int = 16
+    save_every_n_steps: int = 10
+    evaluate_every_n_steps: int = 50
+    pin_memory: bool = True
+    persistent_workers: bool = True
+    prefetch_factor: int = 4
+
+    lora_rank: int = 16
+    lora_alpha: int = 16
+    lora_target_modules: list[str] = field(
+        default_factory=lambda: ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    )
+    adapt_bias: bool = False
+
+    grad_accum_steps: int = 16
+    learning_rate: float = 5e-6
+    weight_decay: float = 0.01
+    adam_momentum: float = 0.9
+    adam_scaling: float = 0.95
+    epochs: int = 1
+
+    gradient_checkpointing: bool = True
+    use_distributed_sampler: bool = True
+
+    output_dir: str = "outputs/checkpoints-q1.5b-lora-full-19M"
+    best_checkpoint_name: str = "qwen_malware_best.pt"
+    test_checkpoint_name: str = "qwen_malware_ep0.pt"
+    plot_dir: str = "outputs/plots/qwen1.5-lora-full-19M"
+
+    resume_checkpoint_path: str | None = None
+
+
+@dataclass
+class Qwen15BLoraFullConfig38M:
+    world_size: int = 2
+
+    model_name: str = "Qwen/Qwen2.5-Coder-1.5B-Instruct"
+    model_path: str = "/run/media/sebi/nvme-1tb/LiLM-Mal/models/qwen2.5-coder-1.5b-instruct"
+
+    num_labels: int = 2
+    num_layers: int = 28
+
+    max_token_len: int = 4096
+    num_chunks: int = 2
+
+    batch_size: int = 2
+    test_batch_size: int = 4
+    num_workers: int = 16
+    save_every_n_steps: int = 10
+    evaluate_every_n_steps: int = 50
+    pin_memory: bool = True
+    persistent_workers: bool = True
+    prefetch_factor: int = 4
+
+    lora_rank: int = 32
+    lora_alpha: int = 32
+    lora_target_modules: list[str] = field(
+        default_factory=lambda: ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    )
+    adapt_bias: bool = False
+
+    grad_accum_steps: int = 16
+    learning_rate: float = 5e-6
+    weight_decay: float = 0.01
+    adam_momentum: float = 0.9
+    adam_scaling: float = 0.95
+    epochs: int = 1
+
+    gradient_checkpointing: bool = True
+    use_distributed_sampler: bool = True
+
+    output_dir: str = "outputs/checkpoints-q1.5b-lora-full-38M"
+    best_checkpoint_name: str = "qwen_malware_best.pt"
+    test_checkpoint_name: str = "qwen_malware_ep0.pt"
+    plot_dir: str = "outputs/plots/qwen1.5-lora-full-38M"
+
+    resume_checkpoint_path: str | None = None
+
+@dataclass
+class Qwen15BLoraFullConfig76M:
+    world_size: int = 2
+
+    model_name: str = "Qwen/Qwen2.5-Coder-1.5B-Instruct"
+    model_path: str = "/run/media/sebi/nvme-1tb/LiLM-Mal/models/qwen2.5-coder-1.5b-instruct"
+
+    num_labels: int = 2
+    num_layers: int = 28
+
+    max_token_len: int = 4096
+    num_chunks: int = 2
+
+    batch_size: int = 2
+    test_batch_size: int = 4
+    num_workers: int = 16
+    save_every_n_steps: int = 10
+    evaluate_every_n_steps: int = 50
+    pin_memory: bool = True
+    persistent_workers: bool = True
+    prefetch_factor: int = 4
+
+    lora_rank: int = 64
+    lora_alpha: int = 64
+    lora_target_modules: list[str] = field(
+        default_factory=lambda: ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    )
+    adapt_bias: bool = False
+
+    grad_accum_steps: int = 16
+    learning_rate: float = 5e-6
+    weight_decay: float = 0.01
+    adam_momentum: float = 0.9
+    adam_scaling: float = 0.95
+    epochs: int = 1
+
+    gradient_checkpointing: bool = True
+    use_distributed_sampler: bool = True
+
+    output_dir: str = "outputs/checkpoints-q1.5b-lora-full-76M"
+    best_checkpoint_name: str = "qwen_malware_best.pt"
+    test_checkpoint_name: str = "qwen_malware_ep0.pt"
+    plot_dir: str = "outputs/plots/qwen1.5-lora-full-76M"
+
+    resume_checkpoint_path: str | None = None
+
+
+
+
+
+@dataclass
+class Qwen3BConfig:
+    world_size:                 int = 2
+
+    model_name:                 str = "Qwen/Qwen2.5-Coder-3B-Instruct"
+    model_path:                 str = "/run/media/sebi/nvme-1tb/LiLM-Mal/models/qwen2.5-coder-3b-instruct"
+
+    num_labels:                 int = 2
+    num_layers:                 int = 36 
+
+    max_token_len:              int = 4096
+    num_chunks:                 int = 2   
+
+    batch_size:                 int = 2
+    test_batch_size:            int = 1
+    num_workers:                int = 16
+    save_every_n_steps:         int = 20
+    evaluate_every_n_steps:     int = 50
+    pin_memory:                 bool = True
+    persistent_workers:         bool = True
+    prefetch_factor:            int = 4
+    
+    n_unfrozen_layers:          int = 6
+    grad_accum_steps:           int = 16 
+    learning_rate:              float = 5e-6
+    weight_decay:               float = 0.01
+    adam_momentum:              float = 0.9
+    adam_scaling:               float = 0.95
+    epochs:                     int = 1
+
+    gradient_checkpointing:     bool = True
+    fsdp_cpu_offload:           bool = True 
+    fsdp_sync_module_states:    bool = True
+    use_distributed_sampler:    bool = True
+    
+    output_dir:                 str = "outputs/checkpoints-q3b"
+    best_checkpoint_name:       str = "qwen_malware_best.pt"
+    test_checkpoint_name:       str = "qwen_malware_ep0.pt"
+    plot_dir:                   str = "outputs/plots/qwen3"
+
+    resume_checkpoint_path:     str | None = None
+
+
+
+@dataclass
+class Qwen3BLoraClassicConfig:
+    world_size: int = 2
+
+    model_name: str = "Qwen/Qwen2.5-Coder-3B-Instruct"
+    model_path: str = "/run/media/sebi/nvme-1tb/LiLM-Mal/models/qwen2.5-coder-3b-instruct"
+
+    num_labels: int = 2
+    num_layers: int = 28
+
+    max_token_len: int = 4096
+    num_chunks: int = 2
+
+    batch_size: int = 1
+    test_batch_size: int = 1
+    num_workers: int = 8
+    save_every_n_steps: int = 10
+    evaluate_every_n_steps: int = 50
+    pin_memory: bool = True
+    persistent_workers: bool = False
+    prefetch_factor: int = 2
+
+    lora_rank: int = 16
+    lora_alpha: int = 16
+    lora_target_modules: list[str] = field(
+        default_factory=lambda: ["q_proj", "v_proj"]
+    )
+    adapt_bias: bool = False
+
+    grad_accum_steps: int = 32
+    learning_rate: float = 5e-6
+    weight_decay: float = 0.01
+    adam_momentum: float = 0.9
+    adam_scaling: float = 0.95
+    epochs: int = 1
+
+    gradient_checkpointing: bool = True
+    checkpoint_segments: int = 2
+    use_distributed_sampler: bool = True
+
+    output_dir: str = "outputs/checkpoints-q3b-lora-classic"
+    best_checkpoint_name: str = "qwen_malware_best.pt"
+    test_checkpoint_name: str = "qwen_malware_ep0.pt"
+    plot_dir: str = "outputs/plots/qwen3-lora-classic"
+
+    resume_checkpoint_path: str | None = None
+
+
+
+@dataclass
+class Qwen3BLoraAttentionConfig:
+    world_size: int = 2
+
+    model_name: str = "Qwen/Qwen2.5-Coder-3B-Instruct"
+    model_path: str = "/run/media/sebi/nvme-1tb/LiLM-Mal/models/qwen2.5-coder-3b-instruct"
+
+    num_labels: int = 2
+    num_layers: int = 28
+
+    max_token_len: int = 4096
+    num_chunks: int = 2
+
+    batch_size: int = 1
+    test_batch_size: int = 1
+    num_workers: int = 8
+    save_every_n_steps: int = 10
+    evaluate_every_n_steps: int = 50
+    pin_memory: bool = True
+    persistent_workers: bool = False
+    prefetch_factor: int = 2
+
+    lora_rank: int = 16
+    lora_alpha: int = 16
+    lora_target_modules: list[str] = field(
+        default_factory=lambda: ["q_proj", "v_proj","k_proj","o_proj"]
+    )
+    adapt_bias: bool = False
+
+    grad_accum_steps: int = 32
+    learning_rate: float = 5e-6
+    weight_decay: float = 0.01
+    adam_momentum: float = 0.9
+    adam_scaling: float = 0.95
+    epochs: int = 1
+
+    gradient_checkpointing: bool = True
+    checkpoint_segments: int = 2
+    use_distributed_sampler: bool = True
+
+    output_dir: str = "outputs/checkpoints-q3b-lora-attention"
+    best_checkpoint_name: str = "qwen_malware_best.pt"
+    test_checkpoint_name: str = "qwen_malware_ep0.pt"
+    plot_dir: str = "outputs/plots/qwen3-lora-attention"
+
+    resume_checkpoint_path: str | None = None
+
+@dataclass
+class Qwen3BLoraFullConfig:
+    world_size: int = 2
+
+    model_name: str = "Qwen/Qwen2.5-Coder-3B-Instruct"
+    model_path: str = "/run/media/sebi/nvme-1tb/LiLM-Mal/models/qwen2.5-coder-3b-instruct"
+
+    num_labels: int = 2
+    num_layers: int = 28
+
+    max_token_len: int = 4096
+    num_chunks: int = 2
+
+    batch_size: int = 1
+    test_batch_size: int = 1
+    num_workers: int = 8
+    save_every_n_steps: int = 10
+    evaluate_every_n_steps: int = 50
+    pin_memory: bool = True
+    persistent_workers: bool = False
+    prefetch_factor: int = 2
+
+    lora_rank: int = 16
+    lora_alpha: int = 16
+    lora_target_modules: list[str] = field(
+        default_factory=lambda: ["q_proj", "v_proj","k_proj","o_proj","up_proj","down_proj","gate_proj"]
+    )
+    adapt_bias: bool = False
+
+    grad_accum_steps: int = 32
+    learning_rate: float = 5e-6
+    weight_decay: float = 0.01
+    adam_momentum: float = 0.9
+    adam_scaling: float = 0.95
+    epochs: int = 1
+
+    gradient_checkpointing: bool = True
+    checkpoint_segments: int = 2
+    use_distributed_sampler: bool = True
+
+    output_dir: str = "outputs/checkpoints-q3b-lora-full"
+    best_checkpoint_name: str = "qwen_malware_best.pt"
+    test_checkpoint_name: str = "qwen_malware_ep0.pt"
+    plot_dir: str = "outputs/plots/qwen3-lora-full"
+
+    resume_checkpoint_path: str | None = None
