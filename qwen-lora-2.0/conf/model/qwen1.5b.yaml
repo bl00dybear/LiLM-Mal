@@ -1,0 +1,71 @@
+# ── Model ──
+model_id: "Qwen/Qwen2.5-Coder-1.5B-Instruct"
+num_labels: 2
+num_layers: 28
+
+# ── Data ──
+data:
+  splits_base: "data/02_metadata/experiments"
+  corpus_base: "data/03_corpus_v2"
+  experiment_name: "elf_v2_full"
+  platform: "elf"
+  elf_test_csv: "data/dataset-splits/subsampled/test_10k_subsampled.csv"
+  elf_test_base: "data/elf-decompiled-dataset/subsampled/test"
+  test_imbalanced_ratio: null
+
+# ── Tokenizer / Chunking ──
+max_token_len: 4096
+num_chunks: 4
+# drop samples whose decompiled_code is shorter than this (0 = keep all);
+# ~13% of the corpus is near-empty decompilation output
+min_code_chars: 500
+
+# ── DataLoader ──
+batch_size: 1
+test_batch_size: 2
+num_workers: 16
+save_every_n_steps: 10
+evaluate_every_n_steps: 50
+pin_memory: true
+persistent_workers: true
+prefetch_factor: 4
+
+# ── LoRA ──
+lora_rank: 64
+lora_alpha: 64
+lora_target_modules:
+  - q_proj
+  - v_proj
+  - k_proj
+  - o_proj
+  - gate_proj
+  - up_proj
+  - down_proj
+adapt_bias: false
+
+# ── Training ──
+strategy: "ddp"      # ddp | fsdp
+world_size: 2
+grad_accum_steps: 16
+learning_rate: 5e-6
+weight_decay: 0.01
+adam_momentum: 0.9
+adam_scaling: 0.95
+epochs: 1
+# per-layer checkpointing in the backbone; with chunk_checkpointing on, this
+# only lowers the recompute peak (slower) — safe to disable at 4096-token chunks
+gradient_checkpointing: false
+# recompute each chunk at backward => activation memory stays O(1 chunk)
+chunk_checkpointing: true
+# chunks per backbone call (higher = faster, more memory)
+chunk_fwd_microbatch: 1
+# variable chunk counts trigger constant torch.compile recompilation
+compile_model: false
+use_distributed_sampler: true
+
+# ── Outputs ──
+output_dir: "outputs/checkpoints-q1.5b-lora-full-76M"
+best_checkpoint_name: "qwen_malware_best.pt"
+test_checkpoint_name: "qwen_malware_ep0.pt"
+plot_dir: "outputs/plots/qwen1.5-lora-full-76M"
+resume_checkpoint_path: null

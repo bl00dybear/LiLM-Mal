@@ -1,0 +1,72 @@
+# ── Model ──
+model_id: "Qwen/Qwen2.5-Coder-1.5B-Instruct"
+num_layers: 28
+
+# ── Data ── (corpus v2, acelasi cu clasificatorul)
+data:
+  splits_base: "data/02_metadata/experiments"
+  corpus_base: "data/03_corpus_v2"
+  experiment_name: "elf_v2_full"
+  platform: "elf"
+min_code_chars: 500
+# subesantionare stratificata a corpusului pentru A+B (null = tot);
+# se aplica in precompute_teacher, trainingul urmeaza manifestul
+max_files: null
+
+# ── Geometrie compresie ──
+# budget cod/segment = max_token_len - num_memory_tokens = 14336 (compresie ~7x)
+max_token_len: 16384
+num_memory_tokens: 2048
+max_segments_per_file: 8      # acoperire 8 x 14336 ≈ 115k tokeni de cod
+
+# ── Teacher (clasificatorul antrenat, LoRA merge-uit in greutati) ──
+teacher_checkpoint_path: "outputs/version_2/qwen-lora-classic/qwen_malware_ep0.pt"
+teacher_lora_rank: 64
+teacher_lora_alpha: 128
+teacher_cache_dir: "outputs/version_2/teacher_cache"
+teacher_batch_size: 2         # doar la precompute (inferenta)
+
+# ── LoRA encoder ──
+lora_rank: 64
+lora_alpha: 128
+lora_target_modules:
+  - q_proj
+  - v_proj
+  - k_proj
+  - o_proj
+  - gate_proj
+  - up_proj
+  - down_proj
+adapt_bias: false
+
+# ── Loss (A + B combinate; 0 dezactiveaza componenta) ──
+lambda_rec: 1.0               # etapa A: CE reconstructie
+lambda_logit: 1.0             # etapa B: MSE pe logit vs teacher
+lambda_repr: 1.0              # etapa B: 1 - cos pe pooled embedding vs teacher
+# cap pe tokenii reconstruiti (pasul de decoder A = k + recon_tokens;
+# 4096 tine pasul in bugetul de 12GB — creste daca ramane VRAM liber)
+recon_tokens: 4096
+ce_chunk_size: 1024           # felii pentru logits [chunk, 152k] la CE
+
+# ── DataLoader ──
+batch_size: 1
+num_workers: 8
+prefetch_factor: 4
+val_fraction: 0.02            # split pe FISIERE, nu pe segmente
+val_max_segments: 400
+
+# ── Training ──
+strategy: "fsdp"              # ddp | fsdp
+world_size: 2
+grad_accum_steps: 32
+learning_rate: 5e-5           # compresia se invata de la zero — lr mai mare decat la clasificator
+weight_decay: 0.01
+adam_momentum: 0.9
+adam_scaling: 0.95
+epochs: 1
+save_every_n_steps: 100
+evaluate_every_n_steps: 200
+
+# ── Outputs ──
+output_dir: "outputs/version_2/compressor-ab"
+resume_checkpoint_path: null

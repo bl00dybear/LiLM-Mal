@@ -1,9 +1,3 @@
-"""
-eval_val_all_models.py
-Rulează inferența pe validation set (distribuit 1:9) pentru toate modelele
-configurate și salvează CSV-uri de predicții în același format ca test_results_elf.csv
-"""
-
 import json
 import os
 import csv
@@ -28,9 +22,6 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 
 
-# ---------------------------------------------------------------------------
-# Configurare modele
-# ---------------------------------------------------------------------------
 
 @dataclass
 class ModelEntry:

@@ -1,0 +1,3 @@
+defaults:
+  - model: qwen1.5b
+  - _self_
