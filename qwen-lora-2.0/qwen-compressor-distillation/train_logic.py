@@ -169,7 +169,6 @@ def train(
         )
 
         for step, batch in progress_bar:
-            # tokeni reali procesati de encoder (cod + memory), numarati pe CPU
             bsz = batch["code_ids"].size(0)
             window_tokens += int(batch["code_mask"].sum()) + bsz * num_memory_tokens
 

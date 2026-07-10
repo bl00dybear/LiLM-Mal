@@ -1,16 +1,3 @@
-"""Precalculeaza tintele teacher-ului (h_t, z_t) pentru fiecare segment si le
-salveaza pe disk, ca la training teacher-ul sa nu mai existe in VRAM.
-
-Per fisier -> {cache_dir}/{sha}.pt:
-    segs:  lista de tensori int32 cu tokenii fiecarui segment
-    h:     [n_seg, hidden] bf16 — pooled embedding (last token) per segment
-    z:     [n_seg] fp32 — logitul teacher-ului per segment
-    label: int
-
-La final scrie {cache_dir}/manifest.csv (sha,label,n_seg) — indexul folosit
-de SegmentDataset. Rularea e reluabila: fisierele deja cache-uite se sar.
-"""
-
 import csv
 import os
 import torch
@@ -40,8 +27,7 @@ def _rank_manifest_path(cache_dir, rank: int) -> Path:
 
 
 def _teacher_batch(segments, prefix_ids, suffix_ids, pad_id, device):
-    # input identic cu ce a vazut teacher-ul la antrenare: prefix + cod + suffix,
-    # left-padding in batch
+
     seqs = [prefix_ids + seg + suffix_ids for seg in segments]
     max_len = max(len(s) for s in seqs)
 
@@ -101,7 +87,7 @@ def worker(rank, config):
                 skipped_existing += 1
                 continue
             except Exception:
-                pass  # cache corupt -> recalculeaza
+                pass
 
         code = load_code(sample["path"])
         segments = tokenize_and_segment(code, tokenizer, budget, max_segments)
@@ -155,7 +141,6 @@ def main(cfg: DictConfig):
 
     config = cfg.model
 
-    # inferenta pura, sharding pe fisiere — nu e nevoie de process group
     mp.spawn(
         worker,
         args=(config,),
@@ -163,7 +148,6 @@ def main(cfg: DictConfig):
         join=True,
     )
 
-    # merge manifestele per-rank
     cache_dir = Path(config.teacher_cache_dir)
     rows = []
     for rank in range(int(config.world_size)):

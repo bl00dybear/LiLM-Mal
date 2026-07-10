@@ -59,7 +59,6 @@ def main_worker(rank, config):
             f"{sum(p.numel() for p in trainable_params):,}"
         )
 
-        # fused=True not supported with DTensor params (FSDP2)
         use_fused = (getattr(config, "strategy", "fsdp") == "ddp")
         optimizer = torch.optim.AdamW(
             params=trainable_params,

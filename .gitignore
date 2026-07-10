@@ -28,3 +28,4 @@ wheel/*.whl
 qwen-lora-2.0/run_single_model.sh
 qwen-lora-2.0/run_training.sh
 qwen-lora-2.0/run_compressor_distill.sh
+qwen-lora-2.0/run_model_128k.sh

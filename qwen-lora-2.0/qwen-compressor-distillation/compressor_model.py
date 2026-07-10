@@ -92,13 +92,7 @@ def inject_lora_simple(
 
 
 def merge_lora_state_dict(state_dict: dict, scaling: float) -> tuple[dict, dict]:
-    """Checkpoint-ul teacher-ului (chei LoRALinear: *.base.weight / *.A / *.B)
-    -> state dict de Qwen2Model curat, cu LoRA merge-uit in greutati
-    (W' = W + B@A*scaling), plus state dict-ul pentru regression_head.
 
-    Merge-ul elimina LoRALinear din decoder la runtime: un singur set de
-    greutati inghetate, fara adaptori de comutat intre encoder si decoder.
-    """
     backbone_sd = {}
     head_sd = {}
 
@@ -121,8 +115,7 @@ def merge_lora_state_dict(state_dict: dict, scaling: float) -> tuple[dict, dict]
                 backbone_sd[sub] = value
         elif key.startswith("regression_head."):
             head_sd[key[len("regression_head."):]] = value
-        # attention_net e ignorat: teacher-ul cache-uit vede 1 chunk,
-        # softmax peste 1 element = identitate
+
 
     return backbone_sd, head_sd
 
@@ -135,7 +128,7 @@ def _load_backbone(config) -> Qwen2Model:
         trust_remote_code=True,
     )
     backbone.config.use_cache = False
-    # per-layer checkpointing: obligatoriu la 16k pe 12GB
+
     backbone.gradient_checkpointing_enable(
         gradient_checkpointing_kwargs={"use_reentrant": False}
     )
@@ -143,12 +136,7 @@ def _load_backbone(config) -> Qwen2Model:
 
 
 class MemoryEncoder(nn.Module):
-    """E: Qwen inghetat + LoRA propriu + memory tokens.
 
-    input:  [cod (<= max_token_len - k) ; M (k sloturi)]  — atentie cauzala,
-            memory la coada ca sa vada tot codul
-    output: Z = hidden states ale pozitiilor de memory  [B, k, hidden]
-    """
 
     def __init__(self, config):
         super().__init__()
@@ -168,8 +156,7 @@ class MemoryEncoder(nn.Module):
 
         self.num_memory_tokens = int(config.num_memory_tokens)
 
-        # init din randuri reale ale tabelei de embedding: M porneste in
-        # distributia pe care backbone-ul o intelege deja
+
         emb = self.backbone.embed_tokens.weight
         g = torch.Generator().manual_seed(42)
         idx = torch.randint(0, emb.size(0), (self.num_memory_tokens,), generator=g)
@@ -177,8 +164,8 @@ class MemoryEncoder(nn.Module):
             mem_init = emb[idx].detach().clone()
             ae_init = emb[idx[:1]].detach().clone()
 
-        self.memory = nn.Parameter(mem_init)        # [k, hidden]
-        self.ae_token = nn.Parameter(ae_init)       # [1, hidden] — start-of-reconstruction
+        self.memory = nn.Parameter(mem_init)
+        self.ae_token = nn.Parameter(ae_init)
 
     def forward(self, code_ids: torch.Tensor, code_mask: torch.Tensor) -> torch.Tensor:
         bsz = code_ids.size(0)
@@ -201,8 +188,6 @@ class MemoryEncoder(nn.Module):
 
 
 class FrozenDecoder(nn.Module):
-    """D: backbone-ul teacher-ului cu LoRA merge-uit + regression head.
-    Complet inghetat — conduce gradientul catre Z fara sa invete nimic."""
 
     def __init__(self, config):
         super().__init__()
@@ -249,16 +234,6 @@ class FrozenDecoder(nn.Module):
 
 
 class CompressorDistiller(nn.Module):
-    """Etapele A + B intr-un singur pas:
-
-      A (lambda_rec):   decoderul reconstruieste segmentul din [Z; ae_token]
-                        — CE pe primii recon_tokens tokeni
-      B (lambda_logit,
-         lambda_repr):  studentul D([prefix; Z; suffix]) se aliniaza la
-                        tintele teacher-ului (z_t, h_t) din cache
-
-    Trainabil: LoRA encoder + memory + ae_token. Decoderul e inghetat.
-    """
 
     def __init__(self, config, tokenizer):
         super().__init__()
@@ -266,11 +241,11 @@ class CompressorDistiller(nn.Module):
         self.encoder = MemoryEncoder(config)
         self.decoder = FrozenDecoder(config)
 
-        self.lambda_rec = float(config.lambda_rec)
+        self.lambda_rec = float(config.lambda_rec) 
         self.lambda_logit = float(config.lambda_logit)
         self.lambda_repr = float(config.lambda_repr)
         if self.lambda_rec == 0 and self.lambda_logit == 0 and self.lambda_repr == 0:
-            raise ValueError("toate lambda-urile sunt 0 — nimic de antrenat")
+            raise ValueError("All lambdas are 0: nothing to train")
 
         self.recon_tokens = int(config.recon_tokens)
         self.ce_chunk_size = int(getattr(config, "ce_chunk_size", 1024))
@@ -279,11 +254,9 @@ class CompressorDistiller(nn.Module):
         self.register_buffer("prefix_ids", torch.tensor(prefix_ids, dtype=torch.long), persistent=False)
         self.register_buffer("suffix_ids", torch.tensor(suffix_ids, dtype=torch.long), persistent=False)
 
-    # ── Etapa A: reconstructie ─────────────────────────────────────────
 
     def _ce_chunk(self, hidden: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        # lm_head = embed_tokens^T (tie_word_embeddings) — logits [chunk, vocab]
-        # se calculeaza pe felii sub checkpoint ca sa nu tina [L, 152k] in viata
+
         logits = F.linear(hidden, self.decoder.backbone.embed_tokens.weight)
         return F.cross_entropy(logits.float(), targets, reduction="sum")
 
@@ -291,8 +264,7 @@ class CompressorDistiller(nn.Module):
         seg = seg_ids[: self.recon_tokens]
         n = seg.size(0)
 
-        # layout: [Z (k) ; ae ; seg[0..n-2]] — pozitia ae prezice seg[0],
-        # pozitia seg[i] prezice seg[i+1] (teacher forcing)
+
         ae = self.encoder.ae_token.unsqueeze(0)
         seg_emb = self.decoder.embed(seg[:-1].unsqueeze(0))
         inputs_embeds = torch.cat([z.unsqueeze(0), ae, seg_emb], dim=1)
@@ -313,7 +285,6 @@ class CompressorDistiller(nn.Module):
 
         return loss_sum / n
 
-    # ── Etapa B: student ───────────────────────────────────────────────
 
     def _student_forward(self, z: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         bsz = z.size(0)
@@ -327,7 +298,6 @@ class CompressorDistiller(nn.Module):
         z_s = self.decoder.regression_head(h_s).squeeze(-1)
         return h_s, z_s
 
-    # ── Forward combinat ───────────────────────────────────────────────
 
     def forward(self, code_ids, code_mask, h_t=None, z_t=None):
         z = self.encoder(code_ids, code_mask)
@@ -348,8 +318,6 @@ class CompressorDistiller(nn.Module):
             total = total + self.lambda_rec * rec
             out["loss_rec"] = rec.detach()
         else:
-            # ae_token nu apare in graf fara reconstructie; termenul nul il
-            # tine "folosit" pentru DDP/replicate
             total = total + 0.0 * self.encoder.ae_token.float().sum()
             out["loss_rec"] = torch.zeros((), device=device)
 

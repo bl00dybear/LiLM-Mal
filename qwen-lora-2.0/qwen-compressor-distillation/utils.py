@@ -11,7 +11,6 @@ from compressor_model import CompressorDistiller, LoRALinear
 
 def setup(rank, world_size):
     os.environ["MASTER_ADDR"] = "localhost"
-    # port diferit de qwen-lora-classic-ddp (12355), sa nu se calce
     os.environ["MASTER_PORT"] = "12356"
     os.environ["RANK"] = str(rank)
     os.environ["LOCAL_RANK"] = str(rank)
@@ -31,15 +30,13 @@ def cleanup():
         dist.destroy_process_group()
 
 
-# ── DDP ────────────────────────────────────────────────────────────────
 
 def load_model_ddp(config, tokenizer, rank):
     torch.cuda.set_device(rank)
 
     model = CompressorDistiller(config, tokenizer).to(rank)
 
-    # DDP urmareste doar parametrii cu requires_grad (LoRA_E + memory + ae);
-    # decoderul inghetat nu intra in bucket-uri
+
     model = DDP(
         model,
         device_ids=[rank],
@@ -51,7 +48,6 @@ def load_model_ddp(config, tokenizer, rank):
     return model
 
 
-# ── FSDP2 ──────────────────────────────────────────────────────────────
 
 def load_model_fsdp(config, tokenizer, rank):
     from torch.distributed.fsdp import fully_shard, MixedPrecisionPolicy
@@ -66,7 +62,6 @@ def load_model_fsdp(config, tokenizer, rank):
         reduce_dtype=torch.float32,
     )
 
-    # LoRA encoder ramane replicat (DDP-style), doar baza inghetata se shardeaza
     lora_params = set()
     for m in model.encoder.modules():
         if isinstance(m, LoRALinear):
@@ -88,23 +83,19 @@ def load_model_fsdp(config, tokenizer, rank):
     fully_shard(
         model.encoder.backbone,
         mp_policy=mp_policy,
-        # 12GB: reshard si radacina (embed_tokens), platim un all-gather in plus
         reshard_after_forward=True,
         ignored_params=backbone_lora if backbone_lora else None,
     )
 
-    # decoderul e complet inghetat (LoRA teacher merge-uit) — se shardeaza tot
     for layer in model.decoder.backbone.layers:
         fully_shard(layer, mp_policy=mp_policy, reshard_after_forward=True)
     fully_shard(model.decoder.backbone, mp_policy=mp_policy, reshard_after_forward=True)
 
-    # replicate pe radacina: LoRA_E + memory + ae_token + regression_head
     replicate(model)
 
     return model
 
 
-# ── Dispatcher ─────────────────────────────────────────────────────────
 
 def load_model(config, tokenizer, rank):
     strategy = getattr(config, "strategy", "fsdp")
@@ -113,7 +104,6 @@ def load_model(config, tokenizer, rank):
     return load_model_ddp(config, tokenizer, rank)
 
 
-# ── Checkpoint helpers ─────────────────────────────────────────────────
 
 def get_raw_model(model, strategy="fsdp"):
     if strategy == "fsdp":
@@ -129,8 +119,7 @@ def get_raw_model(model, strategy="fsdp"):
 
 
 def get_trainable_state_dict(model, strategy="fsdp") -> dict:
-    """Doar parametrii trainabili (LoRA_E + memory + ae_token) — baza inghetata
-    e reconstruibila din model_id + teacher checkpoint, nu se salveaza."""
+
     raw = get_raw_model(model, strategy)
     return {
         name: param.detach().cpu()

@@ -90,8 +90,7 @@ def _is_empty_file(json_path: Path, min_code_chars: int) -> bool:
 
 
 def index_corpus(config) -> list[dict]:
-    """Fisierele din splitul de train (aceeasi filtrare ca in lilm_mal_dataset_v2),
-    optional subesantionate stratificat cu max_files."""
+
     splits_base = Path(config.data.splits_base)
     corpus_base = Path(config.data.corpus_base)
     experiment_name = getattr(config.data, "experiment_name", "elf_v2_full")
