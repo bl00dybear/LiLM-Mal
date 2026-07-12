@@ -2,7 +2,6 @@ import json
 import os
 import csv
 
-# OPȚIMIZARE 1: Previne thread contention-ul de la tokenizerele Rust când folosim multiprocessing
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 from pathlib import Path
@@ -12,7 +11,6 @@ from transformers import logging as hf_logging
 from tqdm import tqdm
 from multiprocessing import Pool, cpu_count
 
-# OPȚIMIZARE 2: orjson e mult mai rapid, fallback pe json dacă nu e instalat
 try:
     import orjson
     HAS_ORJSON = True
@@ -76,7 +74,8 @@ def process_file_optimized(file_path):
 
 def main():
     model_path = "/run/media/sebi/nvme-1tb/LiLM-Mal/models/qwen2.5-coder-1.5b-instruct"
-    num_workers = cpu_count()
+    # num_workers = cpu_count()
+    num_workers = 5
     
     temp_tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     prompt_overhead = "<|im_start|>system\nYou are a reverse-engineering assistant.<|im_end|>\n<|im_start|>user\nAnalyze this code:\n<|im_end|>\n<|im_start|>assistant\n"

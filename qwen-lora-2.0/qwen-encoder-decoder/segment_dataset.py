@@ -1,5 +1,4 @@
 import csv
-import json
 import math
 import os
 import random
@@ -49,89 +48,6 @@ def seg_code_budget(config) -> int:
     return budget
 
 
-def tokenize_and_segment(code: str, tokenizer, budget: int, max_segments: int) -> list[list[int]]:
-    if not code:
-        return []
-    ids = tokenizer(
-        code,
-        add_special_tokens=False,
-        truncation=True,
-        max_length=budget * max_segments,
-    )["input_ids"]
-    if not ids:
-        return []
-    n = min(max_segments, math.ceil(len(ids) / budget))
-    return [ids[i * budget:(i + 1) * budget] for i in range(n)]
-
-
-def load_code(path: str) -> str:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data.get("decompiled_code") or ""
-    except Exception:
-        return ""
-
-
-def _is_empty_file(json_path: Path, min_code_chars: int) -> bool:
-    if min_code_chars <= 0:
-        return False
-    try:
-        if json_path.stat().st_size >= min_code_chars + 4096:
-            return False
-        with open(json_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        code = data.get("decompiled_code") or ""
-        return len(code) < min_code_chars
-    except Exception:
-        return True
-
-
-def index_corpus(config) -> list[dict]:
-
-    splits_base = Path(config.data.splits_base)
-    corpus_base = Path(config.data.corpus_base)
-    experiment_name = getattr(config.data, "experiment_name", "elf_v2_full")
-    platform = getattr(config.data, "platform", "elf")
-    min_code_chars = int(getattr(config, "min_code_chars", 0) or 0)
-
-    csv_path = splits_base / experiment_name / "train.csv"
-    samples = []
-    if not csv_path.exists():
-        print(f"Warning: {csv_path} not found.")
-        return samples
-
-    with open(csv_path, "r", newline="", encoding="utf-8") as f:
-        reader = csv.reader(f)
-        for row in reader:
-            if not row:
-                continue
-            label = int(row[0])
-            sha256 = row[1]
-            label_dir = "malware" if label == 1 else "benign"
-            json_path = corpus_base / platform / label_dir / f"{sha256}.json"
-            if not json_path.exists():
-                continue
-            if _is_empty_file(json_path, min_code_chars):
-                continue
-            samples.append({"path": str(json_path), "sha": sha256, "label": label})
-
-    samples.sort(key=lambda x: x["sha"])
-
-    max_files = getattr(config, "max_files", None)
-    if max_files:
-        rng = random.Random(42)
-        benign = [s for s in samples if s["label"] == 0]
-        malware = [s for s in samples if s["label"] == 1]
-        rng.shuffle(benign)
-        rng.shuffle(malware)
-        half = int(max_files) // 2
-        samples = benign[:half] + malware[:half]
-        samples.sort(key=lambda x: x["sha"])
-
-    return samples
-
-
 def cache_path_for(cache_dir, sha: str) -> Path:
     return Path(cache_dir) / f"{sha}.pt"
 
@@ -144,7 +60,7 @@ def read_manifest(cache_dir) -> list[dict]:
     path = manifest_path(cache_dir)
     if not path.exists():
         raise FileNotFoundError(
-            f"Manifest not found: {path} — run precompute_teacher.py first"
+            f"Manifest not found: {path} — run the distillation precompute_teacher.py first"
         )
     rows = []
     with open(path, "r", newline="", encoding="utf-8") as f:
@@ -193,7 +109,7 @@ class OffsetDistributedSampler(DistributedSampler):
         return max(0, self.num_samples - min(self.start_index, self.num_samples))
 
 
-class SegmentDataset(Dataset):
+class FileDataset(Dataset):
     def __init__(self, items: list[tuple], cache_dir):
         self.items = items
         self.cache_dir = Path(cache_dir)
@@ -202,54 +118,54 @@ class SegmentDataset(Dataset):
         return len(self.items)
 
     def __getitem__(self, idx: int) -> dict:
-        sha, label, seg_idx = self.items[idx]
+        sha, label = self.items[idx]
         d = torch.load(
             cache_path_for(self.cache_dir, sha),
             map_location="cpu",
             weights_only=True,
         )
+        segs = [s.long() for s in d["segs"]]
+        max_len = max(s.size(0) for s in segs)
+
+        code_ids = []
+        code_masks = []
+        for ids in segs:
+            pad_n = max_len - ids.size(0)
+            code_ids.append(torch.cat([ids.new_zeros(pad_n), ids]))
+            code_masks.append(
+                torch.cat([
+                    torch.zeros(pad_n, dtype=torch.long),
+                    torch.ones(ids.size(0), dtype=torch.long),
+                ])
+            )
+
         return {
-            "code_ids": d["segs"][seg_idx].long(),
-            "h_t": d["h"][seg_idx],
-            "z_t": d["z"][seg_idx],
+            "code_ids": torch.stack(code_ids),
+            "code_mask": torch.stack(code_masks),
             "label": torch.tensor(label, dtype=torch.long),
         }
 
 
-def segment_collate_fn(batch: list[dict]) -> dict:
-    max_len = max(x["code_ids"].size(0) for x in batch)
-
-    code_ids = []
-    code_masks = []
-    for x in batch:
-        ids = x["code_ids"]
-        pad_n = max_len - ids.size(0)
-        code_ids.append(torch.cat([ids.new_zeros(pad_n), ids]))
-        code_masks.append(
-            torch.cat([
-                torch.zeros(pad_n, dtype=torch.long),
-                torch.ones(ids.size(0), dtype=torch.long),
-            ])
-        )
-
+def file_collate_fn(batch: list[dict]) -> dict:
+    if len(batch) != 1:
+        raise ValueError(f"file-level training requires batch_size=1, got {len(batch)}")
+    x = batch[0]
     return {
-        "code_ids": torch.stack(code_ids),
-        "code_mask": torch.stack(code_masks),
-        "h_t": torch.stack([x["h_t"] for x in batch]),
-        "z_t": torch.stack([x["z_t"] for x in batch]).float(),
-        "labels": torch.stack([x["label"] for x in batch]),
+        "code_ids": x["code_ids"],
+        "code_mask": x["code_mask"],
+        "labels": x["label"].unsqueeze(0),
     }
 
 
-class SegmentDataLoader(DataLoader):
-    def __init__(self, dataset: SegmentDataset, config, sampler=None, shuffle=True, drop_last=True):
+class FileDataLoader(DataLoader):
+    def __init__(self, dataset: FileDataset, config, sampler=None, shuffle=True, drop_last=True):
         super().__init__(
             dataset,
             batch_size=config.batch_size,
             shuffle=(shuffle and sampler is None),
             num_workers=config.num_workers,
             sampler=sampler,
-            collate_fn=segment_collate_fn,
+            collate_fn=file_collate_fn,
             pin_memory=True,
             drop_last=drop_last,
             persistent_workers=True if config.num_workers > 0 else False,
@@ -258,6 +174,9 @@ class SegmentDataLoader(DataLoader):
 
 
 def build_loaders(config) -> tuple[DataLoader, DataLoader]:
+    if int(config.batch_size) != 1:
+        raise ValueError(f"file-level training requires batch_size=1, got {config.batch_size}")
+
     rows = read_manifest(config.teacher_cache_dir)
 
     rng = random.Random(42)
@@ -269,16 +188,15 @@ def build_loaders(config) -> tuple[DataLoader, DataLoader]:
     train_items, val_items = [], []
     for r in rows:
         target = val_items if r["sha"] in val_shas else train_items
-        for seg_idx in range(r["n_seg"]):
-            target.append((r["sha"], r["label"], seg_idx))
+        target.append((r["sha"], r["label"]))
 
-    val_max = int(getattr(config, "val_max_segments", 0) or 0)
+    val_max = int(getattr(config, "val_max_files", 0) or 0)
     if val_max and len(val_items) > val_max:
         rng.shuffle(val_items)
         val_items = val_items[:val_max]
 
-    train_ds = SegmentDataset(train_items, config.teacher_cache_dir)
-    val_ds = SegmentDataset(val_items, config.teacher_cache_dir)
+    train_ds = FileDataset(train_items, config.teacher_cache_dir)
+    val_ds = FileDataset(val_items, config.teacher_cache_dir)
 
     _is_dist = dist.is_available() and dist.is_initialized()
 
@@ -300,14 +218,14 @@ def build_loaders(config) -> tuple[DataLoader, DataLoader]:
             drop_last=False,
         )
 
-    train_loader = SegmentDataLoader(train_ds, config, sampler=train_sampler)
-    val_loader = SegmentDataLoader(val_ds, config, sampler=val_sampler, shuffle=False, drop_last=False)
+    train_loader = FileDataLoader(train_ds, config, sampler=train_sampler)
+    val_loader = FileDataLoader(val_ds, config, sampler=val_sampler, shuffle=False, drop_last=False)
 
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     if local_rank == 0:
         print(
-            f"[info] [dataset] files: {len(rows)} | train segments: {len(train_items)} "
-            f"| val segments: {len(val_items)}"
+            f"[info] [dataset] files: {len(rows)} | train files: {len(train_items)} "
+            f"| val files: {len(val_items)}"
         )
 
     return train_loader, val_loader

@@ -7,6 +7,7 @@ data:
   corpus_base: "data/03_corpus_v2"
   experiment_name: "elf_v2_full"
   platform: "elf"
+  test_imbalanced_ratio: null
 min_code_chars: 500
 max_files: 20000
 
@@ -14,11 +15,12 @@ max_token_len: 16384
 num_memory_tokens: 2048
 max_segments_per_file: 8
 
-teacher_checkpoint_path: "outputs/version_2/qwen-lora-classic/qwen_malware_ep0.pt"
+teacher_checkpoint_path: "outputs/qwen_lora_76M_16k.pt"
 teacher_lora_rank: 64
 teacher_lora_alpha: 128
 teacher_cache_dir: "outputs/version_2/teacher_cache"
-teacher_batch_size: 2
+
+compressor_checkpoint_path: "outputs/version_2/compressor-ab/compressor_best.pt"
 
 lora_rank: 64
 lora_alpha: 128
@@ -32,24 +34,21 @@ lora_target_modules:
   - down_proj
 adapt_bias: false
 
-random_block_offset: true
+decoder_lora_rank: 32
+decoder_lora_alpha: 64
 
-lambda_rec: 1.0
-lambda_logit: 1.0
-lambda_repr: 1.0
-recon_tokens: 4096
-ce_chunk_size: 1024
+encoder_segment_batch: 1
 
 batch_size: 1
 num_workers: 8
 prefetch_factor: 4
 val_fraction: 0.02
-val_max_segments: 2000
+val_max_files: 300
 
 strategy: "ddp"
 world_size: 2
 grad_accum_steps: 32
-learning_rate: 5e-5
+learning_rate: 2e-5
 weight_decay: 0.01
 adam_momentum: 0.9
 adam_scaling: 0.95
@@ -62,7 +61,8 @@ min_lr_factor: 0.1
 decay_fraction: 0.1
 early_stop_patience: 4
 early_stop_min_delta: 0.005
-best_checkpoint_name: "compressor_best.pt"
+best_checkpoint_name: "encdec_best.pt"
+test_checkpoint_name: "encdec_best.pt"
 
-output_dir: "outputs/version_2/compressor-ab"
+output_dir: "outputs/version_2/encoder-decoder"
 resume_checkpoint_path: null

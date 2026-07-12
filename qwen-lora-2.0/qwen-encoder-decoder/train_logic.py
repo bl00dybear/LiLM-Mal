@@ -26,9 +26,7 @@ def save_checkpoint(
     best=False,
     early_stop_state=None,
 ):
-    strategy = getattr(config, "strategy", "fsdp")
-
-    state_dict = get_trainable_state_dict(model, strategy=strategy)
+    state_dict = get_trainable_state_dict(model)
 
     if rank != 0:
         return
@@ -45,18 +43,18 @@ def save_checkpoint(
     }
 
     if best:
-        fname = getattr(config, "best_checkpoint_name", "compressor_best.pt")
+        fname = getattr(config, "best_checkpoint_name", "encdec_best.pt")
     elif step is not None:
-        fname = f"compressor_ep{epoch}_step{step}.pt"
+        fname = f"encdec_ep{epoch}_step{step}.pt"
     else:
-        fname = f"compressor_ep{epoch}.pt"
+        fname = f"encdec_ep{epoch}.pt"
 
     save_path = os.path.join(config.output_dir, fname)
     torch.save(checkpoint, save_path)
     print(f"[info] [rank 0] checkpoint saved: {save_path}")
 
     if step is not None and not best:
-        pattern = os.path.join(config.output_dir, "compressor_ep*_step*.pt")
+        pattern = os.path.join(config.output_dir, "encdec_ep*_step*.pt")
         files = glob.glob(pattern)
 
         def extract_step(filepath):
@@ -73,49 +71,37 @@ def save_checkpoint(
                 os.remove(to_delete)
 
 
-def get_no_sync_context(model, strategy="fsdp"):
-    if strategy == "ddp":
-        return model.no_sync()
-    return nullcontext()
-
-
 def evaluate(model, loader, rank):
     model.eval()
 
-    sums = torch.zeros(8, device=rank, dtype=torch.float64)
+    sums = torch.zeros(6, device=rank, dtype=torch.float64)
 
     with torch.no_grad():
         for batch in loader:
             code_ids  = batch["code_ids"].to(rank)
             code_mask = batch["code_mask"].to(rank)
-            h_t       = batch["h_t"].to(rank)
-            z_t       = batch["z_t"].to(rank)
             labels    = batch["labels"].to(rank)
 
-            out = model(code_ids=code_ids, code_mask=code_mask, h_t=h_t, z_t=z_t)
+            out = model(code_ids=code_ids, code_mask=code_mask, labels=labels)
 
-            bsz = code_ids.size(0)
-            z_s = out["z_s"]
+            bsz = labels.size(0)
+            preds = (out["logits"] > 0).long()
             sums[0] += out["loss"].item() * bsz
-            sums[1] += out["loss_rec"].item() * bsz
-            sums[2] += out["loss_logit"].item() * bsz
-            sums[3] += out["loss_repr"].item() * bsz
-            sums[4] += out["cos"].item() * bsz
-            sums[5] += ((z_s > 0) == (z_t > 0)).float().sum().item()
-            sums[6] += ((z_s > 0).long() == labels).float().sum().item()
-            sums[7] += bsz
+            sums[1] += (preds == labels).float().sum().item()
+            sums[2] += ((preds == 1) & (labels == 1)).float().sum().item()
+            sums[3] += ((preds == 1) & (labels == 0)).float().sum().item()
+            sums[4] += ((preds == 0) & (labels == 1)).float().sum().item()
+            sums[5] += bsz
 
     dist.all_reduce(sums, op=dist.ReduceOp.SUM)
-    count = max(sums[7].item(), 1.0)
+    count = max(sums[5].item(), 1.0)
+    tp, fp, fn = sums[2].item(), sums[3].item(), sums[4].item()
+    f1 = (2 * tp) / max(2 * tp + fp + fn, 1.0)
 
     return {
-        "val_loss":       sums[0].item() / count,
-        "val_loss_rec":   sums[1].item() / count,
-        "val_loss_logit": sums[2].item() / count,
-        "val_loss_repr":  sums[3].item() / count,
-        "val_cos":        sums[4].item() / count,
-        "val_agree":      sums[5].item() / count,
-        "val_acc":        sums[6].item() / count,
+        "val_loss": sums[0].item() / count,
+        "val_acc":  sums[1].item() / count,
+        "val_f1":   f1,
     }
 
 
@@ -134,7 +120,6 @@ def train(
     early_stop_state: dict = None,
 ) -> None:
     is_distributed = dist.is_available() and dist.is_initialized()
-    strategy = getattr(config, "strategy", "fsdp")
     global_step = max(0, int(start_global_step))
     resume_micro_batches = global_step * grad_accum_steps
 
@@ -203,7 +188,7 @@ def train(
                 if rank == 0:
                     print(
                         f"[info] resume active: skipping {resume_micro_batches} local batches "
-                        f"({samples_to_skip} segments/rank)"
+                        f"({samples_to_skip} files/rank)"
                     )
             else:
                 train_loader.sampler.set_start_index(0)
@@ -221,20 +206,19 @@ def train(
         )
 
         for step, batch in progress_bar:
-            bsz = batch["code_ids"].size(0)
-            window_tokens += int(batch["code_mask"].sum()) + bsz * num_memory_tokens
+            n_seg = batch["code_ids"].size(0)
+            window_tokens += int(batch["code_mask"].sum()) + n_seg * num_memory_tokens
 
             code_ids  = batch["code_ids"].to(rank)
             code_mask = batch["code_mask"].to(rank)
-            h_t       = batch["h_t"].to(rank)
-            z_t       = batch["z_t"].to(rank)
+            labels    = batch["labels"].to(rank)
 
             is_sync_step = ((step + 1) % grad_accum_steps == 0) or ((step + 1) == len(train_loader))
 
-            sync_context = nullcontext() if is_sync_step else get_no_sync_context(model, strategy)
+            sync_context = nullcontext() if is_sync_step else model.no_sync()
 
             with sync_context:
-                out = model(code_ids=code_ids, code_mask=code_mask, h_t=h_t, z_t=z_t)
+                out = model(code_ids=code_ids, code_mask=code_mask, labels=labels)
                 loss = out["loss"] / grad_accum_steps
                 loss.backward()
 
@@ -248,10 +232,6 @@ def train(
 
                     wandb.log({
                         "train/loss":                  actual_loss,
-                        "train/loss_rec":              out["loss_rec"].item(),
-                        "train/loss_logit":            out["loss_logit"].item(),
-                        "train/loss_repr":             out["loss_repr"].item(),
-                        "train/cos":                   out["cos"].item(),
                         "train/lr":                    scheduler.get_last_lr()[0],
                         "train/global_step":           global_step,
                         "train/vram_peak_alloc_gb":    torch.cuda.max_memory_allocated(rank) / 1024**3,
@@ -261,7 +241,6 @@ def train(
                     })
                     progress_bar.set_postfix({
                         "loss": f"{actual_loss:.4f}",
-                        "cos":  f"{out['cos'].item():.3f}",
                         "tok/s": f"{tokens_sec:.0f}",
                     })
 
@@ -309,19 +288,14 @@ def train(
                         print(
                             f"\n[info] Step {global_step} | "
                             f"Val Loss: {metrics['val_loss']:.4f} | "
-                            f"Cos: {metrics['val_cos']:.4f} | "
-                            f"Agree: {metrics['val_agree']:.4f} | "
-                            f"Acc: {metrics['val_acc']:.4f}"
+                            f"Acc: {metrics['val_acc']:.4f} | "
+                            f"F1: {metrics['val_f1']:.4f}"
                         )
                         wandb.log({
-                            "val/loss":       metrics["val_loss"],
-                            "val/loss_rec":   metrics["val_loss_rec"],
-                            "val/loss_logit": metrics["val_loss_logit"],
-                            "val/loss_repr":  metrics["val_loss_repr"],
-                            "val/cos":        metrics["val_cos"],
-                            "val/agree":      metrics["val_agree"],
-                            "val/acc":        metrics["val_acc"],
-                            "val/best_loss":  best_val_loss,
+                            "val/loss":      metrics["val_loss"],
+                            "val/acc":       metrics["val_acc"],
+                            "val/f1":        metrics["val_f1"],
+                            "val/best_loss": best_val_loss,
                             "val/evals_since_best": evals_since_best,
                             "train/global_step": global_step,
                         })
@@ -342,19 +316,15 @@ def train(
             print(
                 f"\n[info] Epoch {epoch} finished | "
                 f"Val Loss: {metrics['val_loss']:.4f} | "
-                f"Cos: {metrics['val_cos']:.4f} | "
-                f"Agree: {metrics['val_agree']:.4f}"
+                f"Acc: {metrics['val_acc']:.4f} | "
+                f"F1: {metrics['val_f1']:.4f}"
             )
             wandb.log({
-                "val/loss":       metrics["val_loss"],
-                "val/loss_rec":   metrics["val_loss_rec"],
-                "val/loss_repr":  metrics["val_loss_repr"],
-                "val/loss_logit": metrics["val_loss_logit"],
-                "val/cos":        metrics["val_cos"],
-                "val/agree":      metrics["val_agree"],
-                "val/acc":        metrics["val_acc"],
-                "val/best_loss":  best_val_loss,
-                "epoch":          epoch,
+                "val/loss":      metrics["val_loss"],
+                "val/acc":       metrics["val_acc"],
+                "val/f1":        metrics["val_f1"],
+                "val/best_loss": best_val_loss,
+                "epoch":         epoch,
             })
 
         save_checkpoint(
@@ -375,6 +345,6 @@ def train(
             if rank == 0:
                 print(
                     f"[info] early stopping: best val_loss {best_val_loss:.4f} saved to "
-                    f"{getattr(config, 'best_checkpoint_name', 'compressor_best.pt')}"
+                    f"{getattr(config, 'best_checkpoint_name', 'encdec_best.pt')}"
                 )
             break

@@ -10,7 +10,7 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim.lr_scheduler import LRScheduler
 
-from compressor_model import CompressorDistiller, LoRALinear
+from model import EncoderDecoderClassifier
 
 
 class WSDScheduler(LRScheduler):
@@ -57,7 +57,7 @@ def set_global_seed(seed: int):
 
 def setup(rank, world_size):
     os.environ["MASTER_ADDR"] = "localhost"
-    os.environ["MASTER_PORT"] = "12356"
+    os.environ["MASTER_PORT"] = "12357"
     os.environ["RANK"] = str(rank)
     os.environ["LOCAL_RANK"] = str(rank)
     os.environ["WORLD_SIZE"] = str(world_size)
@@ -76,12 +76,10 @@ def cleanup():
         dist.destroy_process_group()
 
 
-
-def load_model_ddp(config, tokenizer, rank):
+def load_model(config, tokenizer, rank):
     torch.cuda.set_device(rank)
 
-    model = CompressorDistiller(config, tokenizer).to(rank)
-
+    model = EncoderDecoderClassifier(config, tokenizer).to(rank)
 
     model = DDP(
         model,
@@ -94,84 +92,45 @@ def load_model_ddp(config, tokenizer, rank):
     return model
 
 
-
-def load_model_fsdp(config, tokenizer, rank):
-    from torch.distributed.fsdp import fully_shard, MixedPrecisionPolicy
-    from torch.distributed._composable.replicate import replicate
-
-    torch.cuda.set_device(rank)
-
-    model = CompressorDistiller(config, tokenizer).to(rank)
-
-    mp_policy = MixedPrecisionPolicy(
-        param_dtype=torch.bfloat16,
-        reduce_dtype=torch.float32,
-    )
-
-    lora_params = set()
-    for m in model.encoder.modules():
-        if isinstance(m, LoRALinear):
-            lora_params.add(m.A)
-            lora_params.add(m.B)
-            if m.delta_bias is not None:
-                lora_params.add(m.delta_bias)
-
-    for layer in model.encoder.backbone.layers:
-        layer_lora = lora_params & set(layer.parameters())
-        fully_shard(
-            layer,
-            mp_policy=mp_policy,
-            reshard_after_forward=True,
-            ignored_params=layer_lora if layer_lora else None,
-        )
-
-    backbone_lora = lora_params & set(model.encoder.backbone.parameters())
-    fully_shard(
-        model.encoder.backbone,
-        mp_policy=mp_policy,
-        reshard_after_forward=True,
-        ignored_params=backbone_lora if backbone_lora else None,
-    )
-
-    for layer in model.decoder.backbone.layers:
-        fully_shard(layer, mp_policy=mp_policy, reshard_after_forward=True)
-    fully_shard(model.decoder.backbone, mp_policy=mp_policy, reshard_after_forward=True)
-
-    replicate(model)
-
-    return model
+def get_raw_model(model):
+    m = model.module if hasattr(model, "module") else model
+    if hasattr(m, "_orig_mod"):
+        m = m._orig_mod
+    return m
 
 
-
-def load_model(config, tokenizer, rank):
-    strategy = getattr(config, "strategy", "fsdp")
-    if strategy == "fsdp":
-        return load_model_fsdp(config, tokenizer, rank)
-    return load_model_ddp(config, tokenizer, rank)
-
-
-
-def get_raw_model(model, strategy="fsdp"):
-    if strategy == "fsdp":
-        m = model
-        if hasattr(m, "_orig_mod"):
-            m = m._orig_mod
-        return m
-    else:
-        m = model.module
-        if hasattr(m, "_orig_mod"):
-            m = m._orig_mod
-        return m
-
-
-def get_trainable_state_dict(model, strategy="fsdp") -> dict:
-
-    raw = get_raw_model(model, strategy)
+def get_trainable_state_dict(model) -> dict:
+    raw = get_raw_model(model)
     return {
         name: param.detach().cpu()
         for name, param in raw.named_parameters()
         if param.requires_grad
     }
+
+
+def load_compressor_checkpoint(model, config, rank):
+    path = getattr(config, "compressor_checkpoint_path", None)
+    if not path:
+        if rank == 0:
+            print("[warn] no compressor_checkpoint_path — encoder starts from fresh LoRA init")
+        return
+
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Compressor checkpoint not found: {path}")
+
+    checkpoint = torch.load(path, map_location="cpu", weights_only=True)
+    state_dict = checkpoint["trainable_state_dict"]
+
+    raw = get_raw_model(model)
+    own_keys = set(raw.state_dict().keys())
+    filtered = {k: v for k, v in state_dict.items() if k in own_keys}
+    skipped = [k for k in state_dict if k not in own_keys]
+
+    raw.load_state_dict(filtered, strict=False)
+
+    if rank == 0:
+        print(f"[info] [rank 0] encoder initialized from compressor: {path}")
+        print(f"[info] [rank 0] loaded tensors: {len(filtered)} | skipped: {len(skipped)}")
 
 
 def _infer_step_from_checkpoint_path(path: str) -> int:
@@ -191,8 +150,7 @@ def load_training_checkpoint(model, optimizer, scheduler, config, rank):
 
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
 
-    strategy = getattr(config, "strategy", "fsdp")
-    raw = get_raw_model(model, strategy)
+    raw = get_raw_model(model)
 
     state_dict = checkpoint["trainable_state_dict"]
     missing, unexpected = raw.load_state_dict(state_dict, strict=False)

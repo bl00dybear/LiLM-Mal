@@ -59,7 +59,7 @@ def worker(rank, config):
 
     budget = seg_code_budget(config)
     assert len(prefix_ids) + budget + len(suffix_ids) <= config.max_token_len, (
-        "prompt + segment nu incape in max_token_len"
+        "prompt + segment does not fit in max_token_len"
     )
     max_segments = int(config.max_segments_per_file)
     batch_size = int(config.teacher_batch_size)
@@ -130,8 +130,8 @@ def worker(rank, config):
         writer.writerows(manifest_rows)
 
     print(
-        f"[info] [rank {rank}] gata: {len(manifest_rows)} fisiere "
-        f"({skipped_existing} din cache, {skipped_empty} goale sarite)"
+        f"[info] [rank {rank}] done: {len(manifest_rows)} files "
+        f"({skipped_existing} from cache, {skipped_empty} empty skipped)"
     )
 
 
@@ -164,7 +164,7 @@ def main(cfg: DictConfig):
     with open(manifest_path(cache_dir), "w", newline="", encoding="utf-8") as f:
         csv.writer(f).writerows(rows)
 
-    print(f"[info] manifest scris: {manifest_path(cache_dir)} ({len(rows)} fisiere)")
+    print(f"[info] manifest written: {manifest_path(cache_dir)} ({len(rows)} files)")
 
 
 if __name__ == "__main__":

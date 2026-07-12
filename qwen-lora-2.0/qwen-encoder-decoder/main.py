@@ -7,7 +7,15 @@ from transformers import AutoTokenizer
 
 from segment_dataset import build_loaders, build_prompt_ids, seg_code_budget
 from train_logic import train
-from utils import setup, cleanup, load_model, load_training_checkpoint, set_global_seed, WSDScheduler
+from utils import (
+    setup,
+    cleanup,
+    load_model,
+    load_compressor_checkpoint,
+    load_training_checkpoint,
+    set_global_seed,
+    WSDScheduler,
+)
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
@@ -37,11 +45,12 @@ def main_worker(rank, config):
 
     if rank == 0:
         wandb.init(
-            project="LiLM-Compressor-Distillation",
+            project="LiLM-Encoder-Decoder-Task",
             name=(
-                f"{config.model_id.split('/')[-1]}-AB"
+                f"{config.model_id.split('/')[-1]}-task"
                 f"-k{config.num_memory_tokens}-seg{budget}"
-                f"-rec{config.lambda_rec}-kd{config.lambda_logit}/{config.lambda_repr}"
+                f"-nseg{config.max_segments_per_file}"
+                f"-elora{config.lora_rank}-dlora{config.decoder_lora_rank}"
             ),
             config=OmegaConf.to_container(config, resolve=True),
         )
@@ -52,6 +61,9 @@ def main_worker(rank, config):
         model = load_model(config=config, tokenizer=tokenizer, rank=rank)
         print(f"[info] [rank {rank}] [model] loaded")
 
+        load_compressor_checkpoint(model=model, config=config, rank=rank)
+        dist.barrier()
+
         train_loader, val_loader = build_loaders(config)
 
         trainable_params = [p for p in model.parameters() if p.requires_grad]
@@ -60,14 +72,13 @@ def main_worker(rank, config):
             f"{sum(p.numel() for p in trainable_params):,}"
         )
 
-        use_fused = (getattr(config, "strategy", "fsdp") == "ddp")
         optimizer = torch.optim.AdamW(
             params=trainable_params,
             lr=config.learning_rate,
             betas=(config.adam_momentum, config.adam_scaling),
             eps=1e-8,
             weight_decay=config.weight_decay,
-            fused=use_fused,
+            fused=True,
         )
 
         print(f"[info] [rank {rank}] [optimizer] initialized")

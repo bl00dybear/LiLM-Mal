@@ -29,3 +29,7 @@ qwen-lora-2.0/run_single_model.sh
 qwen-lora-2.0/run_training.sh
 qwen-lora-2.0/run_compressor_distill.sh
 qwen-lora-2.0/run_model_128k.sh
+qwen-lora-2.0/run_full_16k_a6000.sh
+qwen-lora-2.0/run_enc_dec_4k.sh
+qwen-lora-2.0/run_encoder_decoder.sh
+qwen-lora-2.0/run_smoke_distil.sh

@@ -4,7 +4,6 @@ import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.checkpoint import checkpoint
 from transformers import Qwen2Model
 
 from segment_dataset import build_prompt_ids
@@ -61,7 +60,7 @@ class LoRALinear(nn.Module):
         return base_out + lora_out
 
 
-def inject_lora_simple(
+def inject_lora(
     backbone: nn.Module,
     target_modules: tuple[str, ...],
     rank: int,
@@ -120,7 +119,6 @@ def merge_lora_state_dict(state_dict: dict, scaling: float) -> tuple[dict, dict]
         elif key.startswith("regression_head."):
             head_sd[key[len("regression_head."):]] = value
 
-
     return backbone_sd, head_sd
 
 
@@ -140,8 +138,6 @@ def _load_backbone(config) -> Qwen2Model:
 
 
 class MemoryEncoder(nn.Module):
-
-
     def __init__(self, config):
         super().__init__()
 
@@ -150,7 +146,7 @@ class MemoryEncoder(nn.Module):
         for p in self.backbone.parameters():
             p.requires_grad = False
 
-        inject_lora_simple(
+        inject_lora(
             backbone=self.backbone,
             target_modules=tuple(config.lora_target_modules),
             rank=int(config.lora_rank),
@@ -160,16 +156,13 @@ class MemoryEncoder(nn.Module):
 
         self.num_memory_tokens = int(config.num_memory_tokens)
 
-
         emb = self.backbone.embed_tokens.weight
         g = torch.Generator().manual_seed(42)
         idx = torch.randint(0, emb.size(0), (self.num_memory_tokens,), generator=g)
         with torch.no_grad():
             mem_init = emb[idx].detach().clone()
-            ae_init = emb[idx[:1]].detach().clone()
 
         self.memory = nn.Parameter(mem_init)
-        self.ae_token = nn.Parameter(ae_init)
 
     def forward(self, code_ids: torch.Tensor, code_mask: torch.Tensor) -> torch.Tensor:
         bsz = code_ids.size(0)
@@ -191,8 +184,7 @@ class MemoryEncoder(nn.Module):
         return hidden[:, -self.num_memory_tokens:, :]
 
 
-class FrozenDecoder(nn.Module):
-
+class TaskDecoder(nn.Module):
     def __init__(self, config):
         super().__init__()
 
@@ -219,151 +211,87 @@ class FrozenDecoder(nn.Module):
             )
         del backbone_sd
 
+        for p in self.backbone.parameters():
+            p.requires_grad = False
+
+        inject_lora(
+            backbone=self.backbone,
+            target_modules=tuple(config.lora_target_modules),
+            rank=int(config.decoder_lora_rank),
+            alpha=float(config.decoder_lora_alpha),
+            adapt_bias=bool(getattr(config, "adapt_bias", False)),
+        )
+
         hidden_dim = self.backbone.config.hidden_size
         self.regression_head = nn.Linear(hidden_dim, 1, dtype=torch.bfloat16)
         self.regression_head.load_state_dict(head_sd)
 
-        for p in self.parameters():
-            p.requires_grad = False
-
     def embed(self, ids: torch.Tensor) -> torch.Tensor:
         return self.backbone.embed_tokens(ids)
 
-    def encode(self, inputs_embeds: torch.Tensor, attention_mask=None, position_ids=None) -> torch.Tensor:
+    def encode(self, inputs_embeds: torch.Tensor, attention_mask=None) -> torch.Tensor:
         return self.backbone(
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
-            position_ids=position_ids,
             return_dict=True,
         ).last_hidden_state
 
 
-class CompressorDistiller(nn.Module):
-
+class EncoderDecoderClassifier(nn.Module):
     def __init__(self, config, tokenizer):
         super().__init__()
 
         self.encoder = MemoryEncoder(config)
-        self.decoder = FrozenDecoder(config)
+        self.decoder = TaskDecoder(config)
 
-        self.lambda_rec = float(config.lambda_rec) 
-        self.lambda_logit = float(config.lambda_logit)
-        self.lambda_repr = float(config.lambda_repr)
-        if self.lambda_rec == 0 and self.lambda_logit == 0 and self.lambda_repr == 0:
-            raise ValueError("All lambdas are 0: nothing to train")
-
-        self.recon_tokens = int(config.recon_tokens)
-        self.ce_chunk_size = int(getattr(config, "ce_chunk_size", 1024))
-
-        self.random_block_offset = bool(getattr(config, "random_block_offset", False))
-        self.max_block_slots = int(getattr(config, "max_segments_per_file", 1))
+        self.encoder_segment_batch = int(getattr(config, "encoder_segment_batch", 1))
+        self.max_segments_per_file = int(config.max_segments_per_file)
 
         prefix_ids, suffix_ids = build_prompt_ids(tokenizer)
         self.register_buffer("prefix_ids", torch.tensor(prefix_ids, dtype=torch.long), persistent=False)
         self.register_buffer("suffix_ids", torch.tensor(suffix_ids, dtype=torch.long), persistent=False)
 
+        decoder_capacity = int(self.decoder.backbone.config.max_position_embeddings)
+        decoder_seq = (
+            self.max_segments_per_file * self.encoder.num_memory_tokens
+            + len(prefix_ids) + len(suffix_ids)
+        )
+        if decoder_seq > decoder_capacity:
+            raise ValueError(
+                f"decoder input ({decoder_seq}) exceeds decoder capacity ({decoder_capacity}): "
+                f"reduce max_segments_per_file or num_memory_tokens"
+            )
 
-    def _ce_chunk(self, hidden: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    def forward(self, code_ids, code_mask, labels=None):
+        n_seg = code_ids.size(0)
+        if n_seg > self.max_segments_per_file:
+            raise ValueError(
+                f"file has {n_seg} segments, expected at most {self.max_segments_per_file}"
+            )
 
-        logits = F.linear(hidden, self.decoder.backbone.embed_tokens.weight)
-        return F.cross_entropy(logits.float(), targets, reduction="sum")
+        z_chunks = []
+        for start in range(0, n_seg, self.encoder_segment_batch):
+            z_chunks.append(
+                self.encoder(
+                    code_ids[start:start + self.encoder_segment_batch],
+                    code_mask[start:start + self.encoder_segment_batch],
+                )
+            )
+        z = torch.cat(z_chunks, dim=0)
+        z = z.reshape(1, n_seg * z.size(1), z.size(2))
 
-    def _recon_loss_one(self, z: torch.Tensor, seg_ids: torch.Tensor) -> torch.Tensor:
-        seg = seg_ids[: self.recon_tokens]
-        n = seg.size(0)
-
-
-        ae = self.encoder.ae_token.unsqueeze(0)
-        seg_emb = self.decoder.embed(seg[:-1].unsqueeze(0))
-        inputs_embeds = torch.cat([z.unsqueeze(0), ae, seg_emb], dim=1)
-
-        hidden = self.decoder.encode(inputs_embeds)
-        k = self.encoder.num_memory_tokens
-        pred_hidden = hidden[0, k : k + n, :]
-
-        loss_sum = pred_hidden.new_zeros((), dtype=torch.float32)
-        use_ckpt = self.training and torch.is_grad_enabled()
-        for start in range(0, n, self.ce_chunk_size):
-            h = pred_hidden[start : start + self.ce_chunk_size]
-            t = seg[start : start + self.ce_chunk_size]
-            if use_ckpt:
-                loss_sum = loss_sum + checkpoint(self._ce_chunk, h, t, use_reentrant=False)
-            else:
-                loss_sum = loss_sum + self._ce_chunk(h, t)
-
-        return loss_sum / n
-
-
-    def _block_offset_position_ids(self, bsz: int, mem_len: int, device) -> torch.Tensor:
-        p = self.prefix_ids.size(0)
-        s = self.suffix_ids.size(0)
-
-        n = torch.randint(1, self.max_block_slots + 1, (bsz,), device=device)
-        k = (torch.rand(bsz, device=device) * n).long()
-
-        pos_prefix = torch.arange(p, device=device).unsqueeze(0).expand(bsz, -1)
-        pos_z = p + k.unsqueeze(1) * mem_len + torch.arange(mem_len, device=device).unsqueeze(0)
-        pos_suffix = p + n.unsqueeze(1) * mem_len + torch.arange(s, device=device).unsqueeze(0)
-
-        return torch.cat([pos_prefix, pos_z, pos_suffix], dim=1)
-
-    def _student_forward(self, z: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        bsz = z.size(0)
-        prefix_emb = self.decoder.embed(self.prefix_ids).unsqueeze(0).expand(bsz, -1, -1)
-        suffix_emb = self.decoder.embed(self.suffix_ids).unsqueeze(0).expand(bsz, -1, -1)
+        prefix_emb = self.decoder.embed(self.prefix_ids).unsqueeze(0)
+        suffix_emb = self.decoder.embed(self.suffix_ids).unsqueeze(0)
 
         inputs_embeds = torch.cat([prefix_emb, z, suffix_emb], dim=1)
+        hidden = self.decoder.encode(inputs_embeds)
 
-        position_ids = None
-        if self.random_block_offset and self.training and self.max_block_slots > 1:
-            position_ids = self._block_offset_position_ids(bsz, z.size(1), z.device)
+        h = hidden[:, -1, :]
+        logits = self.decoder.regression_head(h).squeeze(-1).reshape(1)
 
-        hidden = self.decoder.encode(inputs_embeds, position_ids=position_ids)
-
-        h_s = hidden[:, -1, :]
-        z_s = self.decoder.regression_head(h_s).squeeze(-1)
-        return h_s, z_s
-
-
-    def forward(self, code_ids, code_mask, h_t=None, z_t=None):
-        z = self.encoder(code_ids, code_mask)
-        bsz = code_ids.size(0)
-        device = code_ids.device
-
-        total = torch.zeros((), device=device, dtype=torch.float32)
-        out = {}
-
-        if self.lambda_rec > 0:
-            rec = torch.zeros((), device=device, dtype=torch.float32)
-            for b in range(bsz):
-                seg = code_ids[b][code_mask[b].bool()]
-                if seg.numel() < 1:
-                    continue
-                rec = rec + self._recon_loss_one(z[b], seg)
-            rec = rec / bsz
-            total = total + self.lambda_rec * rec
-            out["loss_rec"] = rec.detach()
-        else:
-            total = total + 0.0 * self.encoder.ae_token.float().sum()
-            out["loss_rec"] = torch.zeros((), device=device)
-
-        if (self.lambda_logit > 0 or self.lambda_repr > 0) and h_t is not None:
-            h_s, z_s = self._student_forward(z)
-
-            loss_logit = F.mse_loss(z_s.float(), z_t.float())
-            cos = F.cosine_similarity(h_s.float(), h_t.float(), dim=-1)
-            loss_repr = (1.0 - cos).mean()
-
-            total = total + self.lambda_logit * loss_logit + self.lambda_repr * loss_repr
-            out["loss_logit"] = loss_logit.detach()
-            out["loss_repr"] = loss_repr.detach()
-            out["cos"] = cos.detach().mean()
-            out["z_s"] = z_s.detach()
-        else:
-            out["loss_logit"] = torch.zeros((), device=device)
-            out["loss_repr"] = torch.zeros((), device=device)
-            out["cos"] = torch.zeros((), device=device)
-            out["z_s"] = torch.zeros(bsz, device=device)
-
-        out["loss"] = total
+        out = {"logits": logits.detach()}
+        if labels is not None:
+            out["loss"] = F.binary_cross_entropy_with_logits(
+                logits.float(), labels.float()
+            )
         return out
