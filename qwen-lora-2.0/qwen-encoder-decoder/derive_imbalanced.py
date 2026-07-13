@@ -74,6 +74,7 @@ def main():
     ap.add_argument("--ratio", type=int, required=True)
     ap.add_argument("--output_dir", required=True)
     ap.add_argument("--model_id", default="Qwen/Qwen2.5-Coder-1.5B-Instruct")
+    ap.add_argument("--arch", default="encdec")
     args = ap.parse_args()
 
     ratio_tag = f"imbalanced_1_{args.ratio}"
@@ -92,8 +93,8 @@ def main():
     model_short = args.model_id.split("/")[-1]
     wandb.init(
         project=os.environ.get("WANDB_PROJECT", "LLM-Malware-Detection"),
-        name=f"{model_short}-encdec-test-elf-{ratio_tag}",
-        tags=["test", "elf", "encdec", ratio_tag, model_short, "derived"],
+        name=f"{model_short}-{args.arch}-test-elf-{ratio_tag}",
+        tags=["test", "elf", args.arch, ratio_tag, model_short, "derived"],
     )
     wandb.log({f"test/{k}": v for k, v in metrics.items() if isinstance(v, (int, float))})
     wandb.log({
