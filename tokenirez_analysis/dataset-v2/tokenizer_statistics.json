@@ -17,13 +17,29 @@
             "malware": 2949,
             "benign": 6196
         },
-        "2000-8156": {
-            "malware": 6428,
-            "benign": 3682
+        "2000-8K": {
+            "malware": 6438,
+            "benign": 3709
         },
-        "8156-inf": {
-            "malware": 28758,
-            "benign": 27605
+        "8K-16K": {
+            "malware": 4057,
+            "benign": 2577
+        },
+        "16K-32K": {
+            "malware": 593,
+            "benign": 7431
+        },
+        "32K-64K": {
+            "malware": 2209,
+            "benign": 11497
+        },
+        "64K-128K": {
+            "malware": 18322,
+            "benign": 4873
+        },
+        "128K-inf": {
+            "malware": 3567,
+            "benign": 1200
         }
     }
 }

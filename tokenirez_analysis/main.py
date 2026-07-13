@@ -74,8 +74,8 @@ def process_file_optimized(file_path):
 
 def main():
     model_path = "/run/media/sebi/nvme-1tb/LiLM-Mal/models/qwen2.5-coder-1.5b-instruct"
-    # num_workers = cpu_count()
-    num_workers = 5
+    num_workers = cpu_count()
+    # num_workers = 5
     
     temp_tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     prompt_overhead = "<|im_start|>system\nYou are a reverse-engineering assistant.<|im_end|>\n<|im_start|>user\nAnalyze this code:\n<|im_end|>\n<|im_start|>assistant\n"
@@ -103,8 +103,12 @@ def main():
     bucket_counts = {
         "0-100": {"malware": 0, "benign": 0},
         "100-2000": {"malware": 0, "benign": 0},
-        "2000-8156": {"malware": 0, "benign": 0},
-        "8156-inf": {"malware": 0, "benign": 0}
+        "2000-8K": {"malware": 0, "benign": 0},
+        "8K-16K": {"malware": 0, "benign": 0},
+        "16K-32K": {"malware": 0, "benign": 0},
+        "32K-64K": {"malware": 0, "benign": 0},
+        "64K-128K": {"malware": 0, "benign": 0},
+        "128K-inf": {"malware": 0, "benign": 0}
     }
 
     for res in results:
@@ -112,15 +116,23 @@ def main():
             length, is_trunc, cat = res
             lengths.append(length)
             truncated_count += is_trunc
-            
+
             if length <= 100:
                 bucket_counts["0-100"][cat] += 1
             elif length <= 2000:
                 bucket_counts["100-2000"][cat] += 1
-            elif length <= 8156:
-                bucket_counts["2000-8156"][cat] += 1
+            elif length <= 8192:
+                bucket_counts["2000-8K"][cat] += 1
+            elif length <= 16384:
+                bucket_counts["8K-16K"][cat] += 1
+            elif length <= 32768:
+                bucket_counts["16K-32K"][cat] += 1
+            elif length <= 65536:
+                bucket_counts["32K-64K"][cat] += 1
+            elif length <= 131072:
+                bucket_counts["64K-128K"][cat] += 1
             else:
-                bucket_counts["8156-inf"][cat] += 1
+                bucket_counts["128K-inf"][cat] += 1
 
     if not lengths:
         return
@@ -170,6 +182,57 @@ def main():
 
     with open("tokenizer_statistics.json", "w", encoding="utf-8") as f:
         json.dump(stats_dict, f, indent=4)
+
+    plot_bucket_histogram(bucket_counts, "token_length_buckets.pdf")
+
+def plot_bucket_histogram(bucket_counts, out_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    color_benign = "#2a78d6"
+    color_malware = "#e34948"
+
+    buckets = list(bucket_counts.keys())
+    benign = [bucket_counts[b]["benign"] for b in buckets]
+    malware = [bucket_counts[b]["malware"] for b in buckets]
+
+    x = np.arange(len(buckets))
+    width = 0.4
+
+    fig, ax = plt.subplots(figsize=(11, 6))
+    bars_b = ax.bar(x - width / 2, benign, width, label="Benign", color=color_benign)
+    bars_m = ax.bar(x + width / 2, malware, width, label="Malware", color=color_malware)
+
+    ax.set_yscale("log")
+    ax.set_xlabel("Token length bucket")
+    ax.set_ylabel("Number of files (log scale)")
+    ax.set_title("ELF file token-length distribution by class")
+    ax.set_xticks(x)
+    ax.set_xticklabels(buckets, rotation=30, ha="right")
+    ax.legend()
+    ax.grid(axis="y", which="both", linestyle=":", alpha=0.4)
+    ax.set_axisbelow(True)
+
+    for bars in (bars_b, bars_m):
+        for rect in bars:
+            h = rect.get_height()
+            if h > 0:
+                ax.annotate(
+                    str(int(h)),
+                    xy=(rect.get_x() + rect.get_width() / 2, h),
+                    xytext=(0, 3),
+                    textcoords="offset points",
+                    ha="center",
+                    va="bottom",
+                    fontsize=7,
+                )
+
+    fig.tight_layout()
+    fig.savefig(out_path, format="pdf", bbox_inches="tight")
+    plt.close(fig)
+    print(f"Plot saved to {out_path}")
 
 if __name__ == "__main__":
     main()
