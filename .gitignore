@@ -34,3 +34,5 @@ qwen-lora-2.0/run_enc_dec_4k.sh
 qwen-lora-2.0/run_encoder_decoder.sh
 qwen-lora-2.0/run_smoke_distil.sh
 qwen-lora-2.0/run_128k_upload_test.sh
+qwen-lora-2.0/run_128k_and_encdec.sh
+qwen-lora-2.0/run_full_encoder_decoder.sh
